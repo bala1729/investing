@@ -1,7 +1,8 @@
 # Kraken Trading Bot - Project Status
 
-**Last Updated:** 2026-02-01
-**Project Location:** `/Users/balan/Library/CloudStorage/OneDrive-Personal(2)/workspace/investing`
+**Last Updated:** 2026-07-29
+**Project Location:** `/Users/balan/workspace/github/investing`
+**Repository:** [bala1729/investing](git@github.com:bala1729/investing.git) (git, remote `origin`)
 
 ## Project Overview
 
@@ -24,12 +25,14 @@ A cryptocurrency trading bot for Kraken exchange with TradingView webhook integr
 | Order Executor | `src/exchange/executor.py` | Order execution with paper trading simulation |
 | Database Models | `src/database/models.py` | SQLAlchemy models (Trade, Order, Position, Performance) |
 | Database Repository | `src/database/repository.py` | Data access layer with Unit of Work pattern |
+| Webhook API | `src/api/`, `src/main.py` | FastAPI app with `POST /webhook/tradingview` (secret-validated) and `GET /health` |
+| README | `README.md` | Setup/run/test instructions (was missing) |
+| Quality Gate | `pyproject.toml`, `tests/` | `ruff` + `mypy --strict` clean; 88% min coverage enforced via `pytest --cov-fail-under=88` (currently ~99.8%); mandate incl. 1000-line file / 200-line function caps documented in `docs/trading-bot-design.md` |
 
 ### ⬜ Not Yet Implemented
 
 | Component | Location | Priority | Description |
 |-----------|----------|----------|-------------|
-| Webhook API | `src/api/` | High | FastAPI endpoints for TradingView signals |
 | Strategy Framework | `src/bot/strategies/` | Medium | Base strategy class + implementations |
 | Risk Management | `src/risk/` | Medium | Position sizing, stop-loss, drawdown limits |
 | Bot Engine | `src/bot/engine.py` | Medium | Main trading loop and orchestration |
@@ -59,7 +62,7 @@ Defined in `src/config.py`:
 
 1. ~~**Exchange Integration** - Implement Kraken client for market data and order execution~~ ✅
 2. ~~**Database Models** - Create models to persist trades and positions~~ ✅
-3. **Webhook API** - Build FastAPI endpoints for TradingView alerts
+3. ~~**Webhook API** - Build FastAPI endpoints for TradingView alerts~~ ✅
 4. **Strategy Framework** - Create base class and sample strategy
 5. **Risk Management** - Implement position sizing and risk controls
 6. **Bot Engine** - Tie everything together with main trading loop

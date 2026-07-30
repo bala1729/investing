@@ -3,10 +3,10 @@
 import asyncio
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
-from enum import Enum
-from typing import Any
+from enum import StrEnum
+from typing import Any, cast
 
 from loguru import logger
 
@@ -14,14 +14,14 @@ from src.config import Settings, get_settings
 from src.exchange.kraken import KrakenClient
 
 
-class OrderSide(str, Enum):
+class OrderSide(StrEnum):
     """Order side."""
 
     BUY = "buy"
     SELL = "sell"
 
 
-class OrderType(str, Enum):
+class OrderType(StrEnum):
     """Order type."""
 
     MARKET = "market"
@@ -29,7 +29,7 @@ class OrderType(str, Enum):
     STOP_LOSS = "stop_loss"
 
 
-class OrderStatus(str, Enum):
+class OrderStatus(StrEnum):
     """Order status."""
 
     PENDING = "pending"
@@ -53,8 +53,8 @@ class Order:
     status: OrderStatus
     filled_amount: Decimal = Decimal("0")
     average_fill_price: Decimal | None = None
-    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-    updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     exchange_order_id: str | None = None
     is_paper: bool = False
     error_message: str | None = None
@@ -227,7 +227,7 @@ class PaperTradingSimulator:
         order = self._orders.get(order_id)
         if order and order.status == OrderStatus.OPEN:
             order.status = OrderStatus.CANCELLED
-            order.updated_at = datetime.now(timezone.utc)
+            order.updated_at = datetime.now(UTC)
             logger.info(f"[PAPER] Order {order_id} cancelled")
         return order
 
@@ -322,7 +322,9 @@ class OrderExecutor:
                     price=None,
                     status=OrderStatus(result.get("status", "filled")),
                     filled_amount=Decimal(str(result.get("filled", amount))),
-                    average_fill_price=Decimal(str(result["average"])) if result.get("average") else None,
+                    average_fill_price=(
+                        Decimal(str(result["average"])) if result.get("average") else None
+                    ),
                     exchange_order_id=result.get("id"),
                     is_paper=False,
                 )
@@ -402,7 +404,9 @@ class OrderExecutor:
                     price=price,
                     status=OrderStatus(result.get("status", "open")),
                     filled_amount=Decimal(str(result.get("filled", 0))),
-                    average_fill_price=Decimal(str(result["average"])) if result.get("average") else None,
+                    average_fill_price=(
+                        Decimal(str(result["average"])) if result.get("average") else None
+                    ),
                     exchange_order_id=result.get("id"),
                     is_paper=False,
                 )
@@ -472,7 +476,7 @@ class OrderExecutor:
             return {k: str(v) for k, v in self._paper_simulator.get_all_balances().items()}
 
         balance = await self._client.fetch_balance()
-        return balance.get("free", {})
+        return cast(dict[str, Any], balance.get("free", {}))
 
     def get_open_orders(self, symbol: str | None = None) -> list[Order]:
         """Get open orders (paper trading only for local orders).

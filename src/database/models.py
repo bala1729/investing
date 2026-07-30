@@ -1,24 +1,27 @@
 """SQLAlchemy database models for trade persistence."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import (
     Boolean,
     DateTime,
-    Enum,
     Index,
     Numeric,
     String,
     Text,
-    create_engine,
 )
-from sqlalchemy.ext.asyncio import AsyncAttrs, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncAttrs,
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from src.config import get_settings
-from src.exchange.executor import OrderSide, OrderStatus, OrderType
 
 
 class Base(AsyncAttrs, DeclarativeBase):
@@ -50,7 +53,7 @@ class Trade(Base):
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        default=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
         index=True,
     )
 
@@ -104,13 +107,13 @@ class OrderRecord(Base):
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        default=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
         index=True,
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        default=lambda: datetime.now(timezone.utc),
-        onupdate=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
     )
 
     __table_args__ = (
@@ -167,12 +170,12 @@ class Position(Base):
 
     opened_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        default=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
     )
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        default=lambda: datetime.now(timezone.utc),
-        onupdate=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
     )
 
     def to_dict(self) -> dict[str, Any]:
@@ -225,7 +228,7 @@ class PerformanceSnapshot(Base):
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
-        default=lambda: datetime.now(timezone.utc),
+        default=lambda: datetime.now(UTC),
     )
 
     def to_dict(self) -> dict[str, Any]:
@@ -246,11 +249,11 @@ class PerformanceSnapshot(Base):
 
 
 # Database engine and session factory
-_engine = None
-_session_factory = None
+_engine: AsyncEngine | None = None
+_session_factory: async_sessionmaker[AsyncSession] | None = None
 
 
-async def get_engine():
+async def get_engine() -> AsyncEngine:
     """Get or create the async database engine."""
     global _engine
     if _engine is None:
@@ -262,7 +265,7 @@ async def get_engine():
     return _engine
 
 
-async def get_session_factory():
+async def get_session_factory() -> async_sessionmaker[AsyncSession]:
     """Get or create the async session factory."""
     global _session_factory
     if _session_factory is None:

@@ -3,25 +3,23 @@
 import os
 from unittest.mock import patch
 
-import pytest
-
 from src.config import Settings, TradingMode, get_settings
 
 
 class TestTradingMode:
     """Tests for TradingMode enum."""
 
-    def test_paper_mode_value(self):
+    def test_paper_mode_value(self) -> None:
         assert TradingMode.PAPER.value == "paper"
 
-    def test_live_mode_value(self):
+    def test_live_mode_value(self) -> None:
         assert TradingMode.LIVE.value == "live"
 
 
 class TestSettings:
     """Tests for Settings class."""
 
-    def test_default_values(self):
+    def test_default_values(self) -> None:
         """Test that default values are set correctly."""
         with patch.dict(os.environ, {}, clear=True):
             settings = Settings(_env_file=None)
@@ -36,21 +34,21 @@ class TestSettings:
         assert settings.default_stop_loss_pct == 2.0
         assert settings.log_level == "INFO"
 
-    def test_is_paper_trading_true(self):
+    def test_is_paper_trading_true(self) -> None:
         """Test is_paper_trading returns True for paper mode."""
         with patch.dict(os.environ, {"TRADING_MODE": "paper"}, clear=True):
             settings = Settings(_env_file=None)
 
         assert settings.is_paper_trading is True
 
-    def test_is_paper_trading_false(self):
+    def test_is_paper_trading_false(self) -> None:
         """Test is_paper_trading returns False for live mode."""
         with patch.dict(os.environ, {"TRADING_MODE": "live"}, clear=True):
             settings = Settings(_env_file=None)
 
         assert settings.is_paper_trading is False
 
-    def test_loads_from_environment(self):
+    def test_loads_from_environment(self) -> None:
         """Test that settings load from environment variables."""
         env_vars = {
             "KRAKEN_API_KEY": "test_key",
@@ -73,13 +71,13 @@ class TestSettings:
 class TestGetSettings:
     """Tests for get_settings function."""
 
-    def test_returns_settings_instance(self):
+    def test_returns_settings_instance(self) -> None:
         """Test that get_settings returns a Settings instance."""
         get_settings.cache_clear()
         settings = get_settings()
         assert isinstance(settings, Settings)
 
-    def test_caches_settings(self):
+    def test_caches_settings(self) -> None:
         """Test that settings are cached."""
         get_settings.cache_clear()
         settings1 = get_settings()

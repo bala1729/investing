@@ -1,11 +1,12 @@
 """Data access layer for trading database."""
 
-from datetime import datetime, timezone
-from decimal import Decimal
-from typing import Any
 import uuid
+from datetime import UTC, datetime
+from decimal import Decimal
+from types import TracebackType
+from typing import Any
 
-from sqlalchemy import select, update, delete, func, and_
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database.models import (
@@ -15,7 +16,7 @@ from src.database.models import (
     Trade,
     get_session_factory,
 )
-from src.exchange.executor import Order, OrderSide, OrderStatus, OrderType
+from src.exchange.executor import Order, OrderStatus
 
 
 class TradeRepository:
@@ -171,7 +172,7 @@ class OrderRepository:
         """Update order status."""
         values: dict[str, Any] = {
             "status": status.value,
-            "updated_at": datetime.now(timezone.utc),
+            "updated_at": datetime.now(UTC),
         }
         if filled_amount is not None:
             values["filled_amount"] = filled_amount
@@ -345,7 +346,7 @@ class PerformanceRepository:
     ) -> PerformanceSnapshot:
         """Create a performance snapshot."""
         snapshot = PerformanceSnapshot(
-            snapshot_date=datetime.now(timezone.utc),
+            snapshot_date=datetime.now(UTC),
             total_balance_usd=total_balance_usd,
             daily_pnl=daily_pnl,
             cumulative_pnl=cumulative_pnl,
@@ -399,7 +400,12 @@ class UnitOfWork:
         self._session = session_factory()
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
         """Exit async context."""
         if self._session:
             if exc_type:

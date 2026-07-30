@@ -1,13 +1,13 @@
 """Configuration management using pydantic-settings."""
 
-from enum import Enum
+from enum import StrEnum
 from functools import lru_cache
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-class TradingMode(str, Enum):
+class TradingMode(StrEnum):
     """Trading mode enumeration."""
 
     PAPER = "paper"

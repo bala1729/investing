@@ -197,6 +197,29 @@ investing/
 
 ---
 
+## Code Quality Standards
+
+Mandatory for all code in this repository, enforced locally and gated in CI
+(`.github/workflows/ci.yml`, running on every push/PR to `main`):
+
+- **Linting**: `ruff check .` must pass with zero errors.
+- **Type checking**: `mypy` (strict mode, configured in `pyproject.toml`) must pass with zero errors.
+- **Test coverage**: Minimum **88% line coverage**, enforced automatically via `--cov-fail-under=88`
+  in `pytest`'s config (`uv run pytest` fails the run if coverage drops below this).
+- **Dependency vulnerabilities**: `pip-audit` must report no known vulnerabilities in the resolved
+  dependency tree. A flagged CVE blocks the merge until the dependency is upgraded or the finding
+  is otherwise resolved — it isn't waived silently.
+- **File size**: No source file may exceed **1000 lines**. Split by responsibility (e.g. separate
+  modules per exchange, per repository, per strategy) before a file grows past this.
+- **Function size**: No single function or method may exceed **200 lines**. Extract helpers rather
+  than growing one function — this also tends to make code easier to unit test in isolation.
+
+These aren't aspirational — treat a lint failure, a type error, a coverage drop below 88%, a
+flagged vulnerability, or a file/function blowing past the size limits as a blocker on the same
+footing as a failing test.
+
+---
+
 ## Key Features
 
 ### 1. Risk Management

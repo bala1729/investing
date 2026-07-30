@@ -1,7 +1,7 @@
 """Kraken exchange client using CCXT."""
 
-import asyncio
 from decimal import Decimal
+from types import TracebackType
 from typing import Any
 
 import ccxt.async_support as ccxt
@@ -101,7 +101,7 @@ class KrakenClient:
         timeframe: str = "1h",
         since: int | None = None,
         limit: int = 100,
-    ) -> list[list]:
+    ) -> list[list[Any]]:
         """Fetch OHLCV (candlestick) data.
 
         Args:
@@ -389,6 +389,11 @@ class KrakenClient:
         await self.initialize()
         return self
 
-    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
         """Async context manager exit."""
         await self.close()
