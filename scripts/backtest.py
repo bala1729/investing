@@ -8,6 +8,11 @@ Usage:
     uv run python scripts/backtest.py --symbol ETH/USD --fast 5 --slow 20 --balance 5000
     uv run python scripts/backtest.py --symbol BTC/USD --timeframe 1d --limit 720 --fee-pct 0.4
 
+Valid --timeframe values: 1m, 5m, 15m, 30m, 1h, 4h, 1d, 1w, 2w (Kraken has no
+arbitrary intervals). Kraken's public OHLC endpoint also caps history at ~720
+candles regardless of --limit — for a longer lookback, use a coarser
+--timeframe (e.g. 1d or 1w), not a bigger --limit.
+
 See docs/trading-bot-design.md ("Backtesting Guide") for how to interpret the results.
 """
 
@@ -24,8 +29,21 @@ from src.exchange.kraken import KrakenClient
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--symbol", default="BTC/USD", help="Trading pair, e.g. BTC/USD")
-    parser.add_argument("--timeframe", default="1h", help="Candle timeframe, e.g. 1h, 4h, 1d")
-    parser.add_argument("--limit", type=int, default=500, help="Number of historical candles")
+    parser.add_argument(
+        "--timeframe",
+        default="1h",
+        choices=KrakenClient.TIMEFRAMES,
+        help="Candle timeframe. Kraken has no arbitrary intervals (e.g. no '10d') — "
+        "to cover more history, pick a coarser one of these, not a bigger --limit.",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=500,
+        help="Number of historical candles to request. Kraken's public OHLC endpoint "
+        "caps the response at ~720 candles regardless of this value — for a longer "
+        "lookback, use a coarser --timeframe instead of raising --limit.",
+    )
     parser.add_argument("--fast", type=int, default=10, help="Fast SMA period")
     parser.add_argument("--slow", type=int, default=30, help="Slow SMA period")
     parser.add_argument(

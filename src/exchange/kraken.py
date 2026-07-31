@@ -13,6 +13,9 @@ from src.config import Settings, get_settings
 class KrakenClient:
     """Async Kraken exchange client wrapping CCXT."""
 
+    #: Candle intervals Kraken's OHLC endpoint accepts (per ccxt's kraken.timeframes).
+    TIMEFRAMES: tuple[str, ...] = ("1m", "5m", "15m", "30m", "1h", "4h", "1d", "1w", "2w")
+
     def __init__(self, settings: Settings | None = None) -> None:
         """Initialize the Kraken client.
 
