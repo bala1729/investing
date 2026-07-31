@@ -30,6 +30,7 @@ dev = [
     "ruff>=0.1.0",
     "mypy>=1.8.0",
     "pip-audit>=2.7.0",
+    "pandas-stubs>=2.1.0",
 ]
 
 [build-system]
@@ -53,6 +54,10 @@ plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
 module = "ccxt.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "pandas_ta.*"
 ignore_missing_imports = true
 
 [[tool.mypy.overrides]]

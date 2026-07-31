@@ -311,21 +311,21 @@ Kraken uses API key + secret for authentication. Keys should be created with min
 ## Development Phases
 
 ### Phase 1: Foundation
-- [ ] Project setup and configuration
-- [ ] Kraken API integration (read-only)
-- [ ] Basic logging and error handling
-- [ ] Database schema and models
+- [x] Project setup and configuration
+- [x] Kraken API integration (read-only)
+- [x] Basic logging and error handling
+- [x] Database schema and models
 
 ### Phase 2: Core Trading
-- [ ] Order execution engine
-- [ ] Paper trading mode
+- [x] Order execution engine
+- [x] Paper trading mode
 - [ ] Basic risk management
-- [ ] TradingView webhook receiver
+- [x] TradingView webhook receiver
 
 ### Phase 3: Strategies
-- [ ] Strategy framework
-- [ ] Implement example strategies
-- [ ] Backtesting capabilities
+- [x] Strategy framework
+- [x] Implement example strategies
+- [x] Backtesting capabilities
 - [ ] Performance metrics
 
 ### Phase 4: Production
@@ -333,6 +333,66 @@ Kraken uses API key + secret for authentication. Keys should be created with min
 - [ ] Advanced risk management
 - [ ] Performance optimization
 - [ ] Documentation
+
+---
+
+## Backtesting Guide
+
+Before any strategy touches a real (or even paper) order, validate it with `scripts/backtest.py` —
+a walk-forward replay of the strategy against historical Kraken candles (`src/backtest/engine.py`).
+It uses only Kraken's public market-data endpoint, so it needs no API credentials and never touches
+the order executor, database, or webhook path.
+
+### Running it
+
+```bash
+# Quick look, ~30 days of hourly candles (Kraken's public OHLC endpoint caps around 720 candles
+# per request regardless of --limit, so shorter timeframes mean shorter history)
+uv run python scripts/backtest.py --symbol BTC/USD --timeframe 1h --limit 500
+
+# Longer, more meaningful lookback — use a coarser timeframe to fit more history in that same cap
+uv run python scripts/backtest.py --symbol BTC/USD --timeframe 1d --limit 720 --fast 10 --slow 30
+
+# Override the fee/slippage assumptions, position sizing, or starting balance
+uv run python scripts/backtest.py --symbol ETH/USD --fee-pct 0.4 --slippage-pct 0.1 \
+  --position-size-pct 50 --balance 5000
+```
+
+Run `uv run python scripts/backtest.py --help` for the full flag list.
+
+### Reading the output
+
+| Field | What it means | What to watch for |
+|---|---|---|
+| **Total return vs Buy & hold** | The single most important comparison. | If the strategy doesn't clear buy-and-hold by a comfortable margin, it isn't adding value over just holding the asset for that period. |
+| **Win rate** | % of closed trades that were profitable. | Trend-following strategies (like the bundled SMA crossover) are often profitable with a **low** win rate — many small losing whipsaws, a few large winning trends. Don't reject a strategy on win rate alone; read it together with total return. |
+| **Max drawdown** | Worst peak-to-trough decline in equity during the run. | A risk/pain proxy, not just a return number — would you actually hold through that decline with real money? Weigh it against total return, not in isolation. |
+| **Trades / closed trades** | How many round trips the strategy made. | Fewer than ~20–30 closed trades means the win rate and return numbers are easily noise, not signal. Prefer a longer lookback or a finer timeframe before trusting a result built on a handful of trades. |
+| **Fees paid** | Total simulated trading fees across all fills. | Compare it against total return. On a real run, fees turned a 16.5% headline return into 6.4% — barely above buy-and-hold. A strategy that only "wins" before fees isn't a strategy, it's an illusion. |
+
+### Known limitations
+
+- **Idealized-but-not-perfect fills.** Signals fill at the *next* bar's open (no lookahead), which
+  is realistic in direction but still an approximation — `--slippage-pct` narrows that gap, but pick
+  a value that reflects the pair's actual liquidity/spread, not just the CLI default.
+- **Capped history.** Kraken's public OHLC endpoint returns at most ~720 candles per request,
+  regardless of `--limit`. There's currently no way to pull deeper history through this integration.
+- **Single-window, in-sample only.** A good result on one historical window is not evidence the
+  strategy generalizes. Test multiple, non-overlapping periods and more than one asset — if it only
+  "works" on the one window you happened to run, that's overfitting, not edge.
+- **No minimum order size / lot constraints.** Kraken enforces per-pair minimum trade sizes
+  (`KrakenClient.get_minimum_order_amount`); the backtester doesn't check against them.
+- **Long-only, single position, spot only.** No shorting, no leverage, no multiple concurrent
+  positions across pairs.
+
+### Before connecting a strategy to real execution
+
+1. Backtest across more than one timeframe and more than one historical window.
+2. Confirm it beats buy-and-hold by a comfortable margin *after* realistic fees — not marginally,
+   and not only before fees.
+3. Check max drawdown against what you're actually willing to sit through with real money.
+4. Even after a good backtest, start in paper trading (`TRADING_MODE=paper`) — a backtest validates
+   historical mechanics, not future performance or live execution reliability.
 
 ---
 

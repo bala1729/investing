@@ -34,7 +34,7 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --extra dev
-      - run: uv run mypy src tests
+      - run: uv run mypy src tests scripts
 
   test:
     name: Tests + coverage (pytest)

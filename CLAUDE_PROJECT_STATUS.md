@@ -1,6 +1,6 @@
 # Kraken Trading Bot - Project Status
 
-**Last Updated:** 2026-07-29
+**Last Updated:** 2026-07-30
 **Project Location:** `/Users/balan/workspace/github/investing`
 **Repository:** [bala1729/investing](git@github.com:bala1729/investing.git) (git, remote `origin`)
 
@@ -28,16 +28,17 @@ A cryptocurrency trading bot for Kraken exchange with TradingView webhook integr
 | Webhook API | `src/api/`, `src/main.py` | FastAPI app with `POST /webhook/tradingview` (secret-validated) and `GET /health` |
 | README | `README.md` | Setup/run/test instructions (was missing) |
 | Quality Gate | `pyproject.toml`, `tests/` | `ruff` + `mypy --strict` clean; 88% min coverage enforced via `pytest --cov-fail-under=88` (currently ~99.8%); mandate incl. 1000-line file / 200-line function caps documented in `docs/trading-bot-design.md` |
+| CI | `.github/workflows/ci.yml` | GitHub Actions: lint, typecheck, test+coverage, and `pip-audit` dependency vulnerability scan, all as separate jobs on push/PR to `main` |
+| Strategy Framework | `src/bot/strategies/` | `Strategy` ABC + `Signal` value object (`base.py`), `ohlcv_to_dataframe()` helper, and an example `MovingAverageCrossoverStrategy` (SMA crossover via pandas-ta) under `examples/`. Pure functions of candle data → signal; no I/O, not yet wired into an engine |
+| Backtesting Engine | `src/backtest/engine.py`, `scripts/backtest.py` | Walk-forward `Backtester`: replays a `Strategy` bar-by-bar over historical candles, no lookahead (signals fill on the *next* bar's open). Long-only spot model mirroring `PaperTradingSimulator`. Models `fee_pct`/`slippage_pct` per fill (engine defaults to 0/frictionless; CLI defaults to realistic non-zero values). `BacktestResult` reports total return, win rate, max drawdown, total fees paid, vs. a `buy_and_hold_return_pct()` baseline. CLI script runs it against real Kraken history (public endpoint, no API keys needed). Interpretation guide in `docs/trading-bot-design.md` → "Backtesting Guide" |
 
 ### ⬜ Not Yet Implemented
 
 | Component | Location | Priority | Description |
 |-----------|----------|----------|-------------|
-| Strategy Framework | `src/bot/strategies/` | Medium | Base strategy class + implementations |
 | Risk Management | `src/risk/` | Medium | Position sizing, stop-loss, drawdown limits |
 | Bot Engine | `src/bot/engine.py` | Medium | Main trading loop and orchestration |
 | Technical Indicators | `src/bot/indicators/` | Low | Custom indicators beyond pandas-ta |
-| Backtesting Scripts | `scripts/` | Low | Historical strategy testing |
 
 ## Key Dependencies
 
@@ -63,9 +64,9 @@ Defined in `src/config.py`:
 1. ~~**Exchange Integration** - Implement Kraken client for market data and order execution~~ ✅
 2. ~~**Database Models** - Create models to persist trades and positions~~ ✅
 3. ~~**Webhook API** - Build FastAPI endpoints for TradingView alerts~~ ✅
-4. **Strategy Framework** - Create base class and sample strategy
+4. ~~**Strategy Framework** - Create base class and sample strategy~~ ✅
 5. **Risk Management** - Implement position sizing and risk controls
-6. **Bot Engine** - Tie everything together with main trading loop
+6. **Bot Engine** - Tie everything together with main trading loop (wire strategies + risk manager + executor into the actual trading loop; webhook path and strategy signals both still need to reach it)
 
 ## Architecture Notes
 
