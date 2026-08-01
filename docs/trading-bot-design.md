@@ -319,7 +319,7 @@ Kraken uses API key + secret for authentication. Keys should be created with min
 ### Phase 2: Core Trading
 - [x] Order execution engine
 - [x] Paper trading mode
-- [ ] Basic risk management
+- [x] Basic risk management
 - [x] TradingView webhook receiver
 
 ### Phase 3: Strategies

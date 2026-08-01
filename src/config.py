@@ -52,6 +52,9 @@ class Settings(BaseSettings):
     default_stop_loss_pct: float = Field(
         default=2.0, description="Default stop loss percentage"
     )
+    max_open_positions: int = Field(
+        default=5, description="Maximum number of concurrent open positions"
+    )
 
     # Logging
     log_level: str = Field(default="INFO", description="Logging level")

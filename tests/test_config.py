@@ -32,6 +32,7 @@ class TestSettings:
         assert settings.max_position_size_pct == 5.0
         assert settings.max_drawdown_pct == 10.0
         assert settings.default_stop_loss_pct == 2.0
+        assert settings.max_open_positions == 5
         assert settings.log_level == "INFO"
 
     def test_is_paper_trading_true(self) -> None:
@@ -56,6 +57,7 @@ class TestSettings:
             "TRADING_MODE": "live",
             "WEBHOOK_PORT": "9000",
             "MAX_POSITION_SIZE_PCT": "10.0",
+            "MAX_OPEN_POSITIONS": "3",
         }
 
         with patch.dict(os.environ, env_vars, clear=True):
@@ -66,6 +68,7 @@ class TestSettings:
         assert settings.trading_mode == TradingMode.LIVE
         assert settings.webhook_port == 9000
         assert settings.max_position_size_pct == 10.0
+        assert settings.max_open_positions == 3
 
 
 class TestGetSettings:

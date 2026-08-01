@@ -1,6 +1,6 @@
 # Kraken Trading Bot - Project Status
 
-**Last Updated:** 2026-07-30
+**Last Updated:** 2026-07-31
 **Project Location:** `/Users/balan/workspace/github/investing`
 **Repository:** [bala1729/investing](git@github.com:bala1729/investing.git) (git, remote `origin`)
 
@@ -31,13 +31,13 @@ A cryptocurrency trading bot for Kraken exchange with TradingView webhook integr
 | CI | `.github/workflows/ci.yml` | GitHub Actions: lint, typecheck, test+coverage, and `pip-audit` dependency vulnerability scan, all as separate jobs on push/PR to `main` |
 | Strategy Framework | `src/bot/strategies/` | `Strategy` ABC + `Signal` value object + shared `detect_crossover()` helper (`base.py`), `ohlcv_to_dataframe()` helper, and two example strategies under `examples/`: `MovingAverageCrossoverStrategy` (SMA) and `EMACrossoverStrategy` (EMA), selectable via `scripts/backtest.py --strategy sma\|ema` for direct comparison. Pure functions of candle data → signal; no I/O, not yet wired into an engine |
 | Backtesting Engine | `src/backtest/engine.py`, `scripts/backtest.py` | Walk-forward `Backtester`: replays a `Strategy` bar-by-bar over historical candles, no lookahead (signals fill on the *next* bar's open). Long-only spot model mirroring `PaperTradingSimulator`. Models `fee_pct`/`slippage_pct` per fill (engine defaults to 0/frictionless; CLI defaults to realistic non-zero values). `BacktestResult` reports total return, win rate, max drawdown, total fees paid, vs. a `buy_and_hold_return_pct()` baseline. CLI script runs it against real Kraken history (public endpoint, no API keys needed); `--timeframe` validated against `KrakenClient.TIMEFRAMES`. Interpretation guide in `docs/trading-bot-design.md` → "Backtesting Guide" |
+| Risk Management | `src/risk/manager.py` | `RiskManager`: stateless, mirrors `Strategy`/`Backtester` (no I/O, everything passed explicitly). Position sizing at `max_position_size_pct` of balance, stop-loss/take-profit pricing (`default_stop_loss_pct` + configurable risk:reward ratio — first real use of `Position.stop_loss`/`take_profit`, unused until now), drawdown circuit breaker (`max_drawdown_pct`), exposure limit (new `max_open_positions` setting). `evaluate_signal()` gates BUY signals through all checks; SELL (closing) is always approved, never blocked. **Not yet wired into the webhook path or anywhere else — that's the Bot Engine's job.** |
 
 ### ⬜ Not Yet Implemented
 
 | Component | Location | Priority | Description |
 |-----------|----------|----------|-------------|
-| Risk Management | `src/risk/` | Medium | Position sizing, stop-loss, drawdown limits |
-| Bot Engine | `src/bot/engine.py` | Medium | Main trading loop and orchestration |
+| Bot Engine | `src/bot/engine.py` | Medium | Main trading loop and orchestration — wires strategies + `RiskManager` + `OrderExecutor` together; webhook path and strategy-generated signals both still need to reach it and the risk gate |
 | Technical Indicators | `src/bot/indicators/` | Low | Custom indicators beyond pandas-ta |
 
 ## Key Dependencies
@@ -65,8 +65,8 @@ Defined in `src/config.py`:
 2. ~~**Database Models** - Create models to persist trades and positions~~ ✅
 3. ~~**Webhook API** - Build FastAPI endpoints for TradingView alerts~~ ✅
 4. ~~**Strategy Framework** - Create base class and sample strategy~~ ✅
-5. **Risk Management** - Implement position sizing and risk controls
-6. **Bot Engine** - Tie everything together with main trading loop (wire strategies + risk manager + executor into the actual trading loop; webhook path and strategy signals both still need to reach it)
+5. ~~**Risk Management** - Implement position sizing and risk controls~~ ✅
+6. **Bot Engine** - Tie everything together with main trading loop (wire strategies + `RiskManager` + `OrderExecutor` into the actual trading loop; webhook path and strategy signals both still need to reach it and the risk gate)
 
 ## Architecture Notes
 
