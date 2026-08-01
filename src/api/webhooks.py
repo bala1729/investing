@@ -6,52 +6,61 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from loguru import logger
 
 from src.api.schemas import TradingViewSignal, WebhookResponse
+from src.bot.engine import TradingEngine
+from src.bot.strategies.base import Signal
 from src.config import Settings, get_settings
-from src.database.repository import UnitOfWork
-from src.exchange.executor import OrderExecutor, OrderSide, OrderStatus
+from src.exchange.executor import OrderSide
 
 router = APIRouter()
 
 
-def get_executor(request: Request) -> OrderExecutor:
-    """Retrieve the shared OrderExecutor from application state."""
-    return cast(OrderExecutor, request.app.state.executor)
+def get_engine(request: Request) -> TradingEngine:
+    """Retrieve the shared TradingEngine from application state."""
+    return cast(TradingEngine, request.app.state.engine)
 
 
 @router.post("/webhook/tradingview", response_model=WebhookResponse)
 async def receive_tradingview_signal(
-    signal: TradingViewSignal,
-    executor: OrderExecutor = Depends(get_executor),
+    payload: TradingViewSignal,
+    engine: TradingEngine = Depends(get_engine),
     settings: Settings = Depends(get_settings),
 ) -> WebhookResponse:
-    """Receive a TradingView alert and execute the corresponding order."""
-    if signal.secret != settings.webhook_secret:
-        logger.warning(f"Rejected webhook signal for {signal.symbol}: invalid secret")
+    """Receive a TradingView alert and route it through the risk-gated trading engine."""
+    if payload.secret != settings.webhook_secret:
+        logger.warning(f"Rejected webhook signal for {payload.symbol}: invalid secret")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid webhook secret"
         )
 
-    side = OrderSide(signal.action)
+    side = OrderSide(payload.action)
+    signal = Signal(
+        symbol=payload.symbol,
+        side=side,
+        strategy=payload.strategy or "tradingview_webhook",
+        reason="TradingView webhook signal",
+    )
 
-    if signal.price is not None:
-        order = await executor.execute_limit_order(
-            signal.symbol, side, signal.quantity, signal.price
+    result = await engine.process_signal(
+        signal, quantity=payload.quantity, limit_price=payload.price
+    )
+
+    if not result.executed or result.order is None:
+        logger.info(f"Webhook signal for {payload.symbol} not executed: {result.reason}")
+        return WebhookResponse(
+            approved=False,
+            reason=result.reason,
+            symbol=payload.symbol,
+            side=side.value,
         )
-    else:
-        order = await executor.execute_market_order(signal.symbol, side, signal.quantity)
 
-    async with UnitOfWork() as uow:
-        await uow.orders.create(order, strategy=signal.strategy)
-        if order.status == OrderStatus.FILLED:
-            await uow.trades.create(order, strategy=signal.strategy)
-        await uow.commit()
-
+    order = result.order
     logger.info(
-        f"Webhook processed: {signal.action} {signal.quantity} {signal.symbol} "
+        f"Webhook processed: {payload.action} {order.amount} {payload.symbol} "
         f"-> {order.status.value}"
     )
 
     return WebhookResponse(
+        approved=True,
         order_id=order.id,
         status=order.status.value,
         symbol=order.symbol,

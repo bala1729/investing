@@ -20,6 +20,8 @@ class TestLifespan:
             async with lifespan(app):
                 assert app.state.client is mock_client
                 assert app.state.executor is not None
+                assert app.state.risk_manager is not None
+                assert app.state.engine is not None
 
             mock_client.initialize.assert_awaited_once()
             mock_init_db.assert_awaited_once()

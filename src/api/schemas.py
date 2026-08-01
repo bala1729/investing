@@ -17,7 +17,12 @@ class TradingViewSignal(BaseModel):
     secret: str = Field(..., description="Shared secret for authenticating the webhook")
     symbol: str = Field(..., description="Trading pair symbol, e.g. BTC/USD")
     action: Literal["buy", "sell"] = Field(..., description="Order side")
-    quantity: Decimal = Field(..., gt=0, description="Order amount in base currency")
+    quantity: Decimal | None = Field(
+        default=None,
+        gt=0,
+        description="Order amount in base currency. Omit to let the risk manager size it "
+        "automatically from account balance and position-sizing limits.",
+    )
     price: Decimal | None = Field(
         default=None, description="Limit price; omit for a market order"
     )
@@ -27,11 +32,19 @@ class TradingViewSignal(BaseModel):
 
 
 class WebhookResponse(BaseModel):
-    """Response returned after processing a webhook signal."""
+    """Response returned after processing a webhook signal.
 
-    order_id: str
-    status: str
+    `approved` is False when the risk manager rejected the signal (e.g.
+    drawdown or exposure limits) or there was nothing to execute (e.g. a
+    SELL with no open position) - `reason` explains why, and the order
+    fields are left unset since no order was placed.
+    """
+
+    approved: bool
+    reason: str | None = None
+    order_id: str | None = None
+    status: str | None = None
     symbol: str
     side: str
-    amount: str
+    amount: str | None = None
     price: str | None = None
