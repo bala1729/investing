@@ -24,6 +24,7 @@ from src.bot.engine import TradingEngine
 from src.bot.strategies.examples.ema_crossover import EMACrossoverStrategy
 from src.bot.strategies.examples.moving_average_crossover import MovingAverageCrossoverStrategy
 from src.config import get_settings
+from src.database.models import init_database
 from src.exchange.executor import OrderExecutor
 from src.exchange.kraken import KrakenClient
 from src.risk.manager import RiskManager
@@ -52,7 +53,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fast", type=int, default=10, help="Fast moving-average period")
     parser.add_argument("--slow", type=int, default=30, help="Slow moving-average period")
     parser.add_argument(
-        "--limit", type=int, default=100, help="Candles fetched per cycle (must exceed --slow)"
+        "--limit",
+        type=int,
+        default=100,
+        help="Closed candles used per cycle (must exceed --slow). One extra candle is "
+        "always fetched and dropped, since the most recent one from the exchange is "
+        "still forming.",
     )
     parser.add_argument(
         "--poll-interval",
@@ -75,6 +81,7 @@ async def main() -> None:
 
     client = KrakenClient(settings)
     await client.initialize()
+    await init_database()
     try:
         executor = OrderExecutor(client, settings)
         risk_manager = RiskManager(settings)

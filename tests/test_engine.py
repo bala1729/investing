@@ -374,6 +374,19 @@ class ScriptedStrategy(Strategy):
         return self._signal
 
 
+class RecordingStrategy(Strategy):
+    """Test double: records the candles DataFrame it was given, returns a fixed signal."""
+
+    def __init__(self, signal: Signal | None) -> None:
+        super().__init__(name="recording")
+        self._signal = signal
+        self.received_candles: pd.DataFrame | None = None
+
+    def generate_signal(self, symbol: str, candles: pd.DataFrame) -> Signal | None:
+        self.received_candles = candles
+        return self._signal
+
+
 class TestRunStrategyOnce:
     async def test_no_signal_produced(self, db_settings: Settings) -> None:
         client = make_client()
@@ -401,6 +414,39 @@ class TestRunStrategyOnce:
 
         assert result.executed is True
         executor.execute_market_order.assert_awaited_once()
+
+    async def test_drops_the_most_recent_possibly_incomplete_candle(
+        self, db_settings: Settings
+    ) -> None:
+        client = make_client()
+        client.fetch_ohlcv.return_value = [
+            [1, 100.0, 100.0, 100.0, 100.0, 1.0],
+            [2, 101.0, 101.0, 101.0, 101.0, 1.0],
+            [3, 102.0, 102.0, 102.0, 102.0, 1.0],  # still forming - must be dropped
+        ]
+        executor = make_executor()
+        engine = make_engine(client, executor, db_settings)
+        strategy = RecordingStrategy(None)
+
+        await engine.run_strategy_once(strategy, "BTC/USD", timeframe="1h", limit=2)
+
+        client.fetch_ohlcv.assert_awaited_once_with("BTC/USD", timeframe="1h", limit=3)
+        assert strategy.received_candles is not None
+        assert len(strategy.received_candles) == 2
+        assert strategy.received_candles.iloc[-1]["close"] == 101.0
+
+    async def test_handles_empty_ohlcv_response(self, db_settings: Settings) -> None:
+        client = make_client()
+        client.fetch_ohlcv.return_value = []
+        executor = make_executor()
+        engine = make_engine(client, executor, db_settings)
+        strategy = RecordingStrategy(None)
+
+        result = await engine.run_strategy_once(strategy, "BTC/USD")
+
+        assert result.executed is False
+        assert strategy.received_candles is not None
+        assert len(strategy.received_candles) == 0
 
 
 class TestRunForever:

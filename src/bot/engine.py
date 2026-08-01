@@ -181,9 +181,19 @@ class TradingEngine:
         timeframe: str = "1h",
         limit: int = 100,
     ) -> EngineResult:
-        """Fetch recent candles, ask the strategy for a signal, and process it if there is one."""
-        ohlcv = await self._client.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit)
-        candles = ohlcv_to_dataframe(ohlcv)
+        """Fetch recent candles, ask the strategy for a signal, and process it if there is one.
+
+        Fetches one extra candle and drops the newest before handing candles
+        to the strategy — the most recent candle from the exchange is still
+        forming (its close is just the latest trade price, and its H/L/V
+        keep changing until the period actually closes). Acting on a signal
+        computed against that partial bar would be inconsistent with
+        backtesting, where every bar evaluated is always a closed historical
+        candle ("repainting", in TradingView terms) — this keeps live signal
+        generation on the same footing as the backtester.
+        """
+        ohlcv = await self._client.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit + 1)
+        candles = ohlcv_to_dataframe(ohlcv[:-1])
         signal = strategy.generate_signal(symbol, candles)
         if signal is None:
             return EngineResult(executed=False, reason="Strategy produced no signal")
