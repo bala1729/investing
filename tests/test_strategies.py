@@ -6,7 +6,13 @@ import pandas as pd
 import pandas_ta as ta
 import pytest
 
-from src.bot.strategies.base import Signal, Strategy, detect_crossover, ohlcv_to_dataframe
+from src.bot.strategies.base import (
+    Signal,
+    Strategy,
+    detect_crossover,
+    mtf_trend_confirms_buy,
+    ohlcv_to_dataframe,
+)
 from src.bot.strategies.examples.ema_crossover import EMACrossoverStrategy
 from src.bot.strategies.examples.heikin_ashi_confluence import (
     HeikinAshiConfluenceStrategy,
@@ -102,14 +108,24 @@ class TestStrategyBaseClass:
 
     def test_default_name_is_class_name(self) -> None:
         class NoopStrategy(Strategy):
-            def generate_signal(self, symbol: str, candles: pd.DataFrame) -> Signal | None:
+            def generate_signal(
+                self,
+                symbol: str,
+                candles: pd.DataFrame,
+                higher_tf_candles: dict[str, pd.DataFrame] | None = None,
+            ) -> Signal | None:
                 return None
 
         assert NoopStrategy().name == "NoopStrategy"
 
     def test_explicit_name_overrides_default(self) -> None:
         class NoopStrategy(Strategy):
-            def generate_signal(self, symbol: str, candles: pd.DataFrame) -> Signal | None:
+            def generate_signal(
+                self,
+                symbol: str,
+                candles: pd.DataFrame,
+                higher_tf_candles: dict[str, pd.DataFrame] | None = None,
+            ) -> Signal | None:
                 return None
 
         assert NoopStrategy(name="custom").name == "custom"
@@ -118,6 +134,76 @@ class TestStrategyBaseClass:
 def make_candles(closes: list[float]) -> pd.DataFrame:
     """Build a minimal candles DataFrame with just the close column the strategy needs."""
     return pd.DataFrame({"close": closes})
+
+
+class TestMtfTrendConfirmsBuy:
+    """Tests for the shared multi-timeframe entry-confirmation helper."""
+
+    def test_confirms_when_all_timeframes_trend_up(self) -> None:
+        uptrend = make_candles([100.0, 105.0, 110.0, 120.0])
+        higher_tf_candles = {"1h": uptrend, "15m": uptrend}
+
+        assert (
+            mtf_trend_confirms_buy(higher_tf_candles, fast_period=2, slow_period=3, use_ema=False)
+            is True
+        )
+
+    def test_rejects_when_any_timeframe_trends_down(self) -> None:
+        uptrend = make_candles([100.0, 105.0, 110.0, 120.0])
+        downtrend = make_candles([120.0, 110.0, 105.0, 100.0])
+        higher_tf_candles = {"1h": uptrend, "15m": downtrend}
+
+        assert (
+            mtf_trend_confirms_buy(higher_tf_candles, fast_period=2, slow_period=3, use_ema=False)
+            is False
+        )
+
+    def test_rejects_when_not_enough_candles(self) -> None:
+        short = make_candles([100.0, 105.0, 110.0])  # slow_period + 1 == 4 required
+        higher_tf_candles = {"1h": short}
+
+        assert (
+            mtf_trend_confirms_buy(higher_tf_candles, fast_period=2, slow_period=3, use_ema=False)
+            is False
+        )
+
+    def test_rejects_when_close_prices_contain_nan(self) -> None:
+        candles = make_candles([100.0, 101.0, 102.0, float("nan")])
+        higher_tf_candles = {"1h": candles}
+
+        assert (
+            mtf_trend_confirms_buy(higher_tf_candles, fast_period=2, slow_period=3, use_ema=False)
+            is False
+        )
+
+    def test_empty_dict_is_vacuously_confirmed(self) -> None:
+        assert mtf_trend_confirms_buy({}, fast_period=2, slow_period=3, use_ema=False) is True
+
+    def test_use_ema_flag_selects_ema_not_sma(self) -> None:
+        closes = [
+            100.0, 101.39, 102.48, 99.01, 101.63, 102.03, 104.81, 105.12, 100.12,
+            98.36, 93.56, 97.85, 101.64, 104.95,
+        ]
+        candles = make_candles(closes)
+        close_series = pd.Series(closes, dtype=float)
+
+        reference_ema_fast = ta.ema(close_series, length=5).iloc[-1]
+        reference_ema_slow = ta.ema(close_series, length=10).iloc[-1]
+        reference_sma_fast = ta.sma(close_series, length=5).iloc[-1]
+        reference_sma_slow = ta.sma(close_series, length=10).iloc[-1]
+        # sanity: EMA and SMA actually disagree on direction here, so use_ema matters
+        assert (reference_ema_fast > reference_ema_slow) != (
+            reference_sma_fast > reference_sma_slow
+        )
+
+        ema_result = mtf_trend_confirms_buy(
+            {"1h": candles}, fast_period=5, slow_period=10, use_ema=True
+        )
+        sma_result = mtf_trend_confirms_buy(
+            {"1h": candles}, fast_period=5, slow_period=10, use_ema=False
+        )
+
+        assert ema_result != sma_result
 
 
 class TestMovingAverageCrossoverStrategy:
@@ -164,6 +250,44 @@ class TestMovingAverageCrossoverStrategy:
         candles = make_candles([100, 100, 100, 100])
 
         assert strategy.generate_signal("BTC/USD", candles) is None
+
+    def test_mtf_confirmation_suppresses_buy_when_higher_tf_not_aligned(self) -> None:
+        strategy = MovingAverageCrossoverStrategy(fast_period=2, slow_period=3)
+        candles = make_candles([100, 100, 90, 130])
+        downtrend = make_candles([120.0, 110.0, 105.0, 100.0])
+
+        signal = strategy.generate_signal("BTC/USD", candles, {"1h": downtrend})
+
+        assert signal is None
+
+    def test_mtf_confirmation_allows_buy_when_all_higher_tf_aligned(self) -> None:
+        strategy = MovingAverageCrossoverStrategy(fast_period=2, slow_period=3)
+        candles = make_candles([100, 100, 90, 130])
+        uptrend = make_candles([100.0, 105.0, 110.0, 120.0])
+
+        signal = strategy.generate_signal("BTC/USD", candles, {"1h": uptrend, "15m": uptrend})
+
+        assert signal is not None
+        assert signal.side == OrderSide.BUY
+
+    def test_mtf_confirmation_does_not_affect_sell_signal(self) -> None:
+        strategy = MovingAverageCrossoverStrategy(fast_period=2, slow_period=3)
+        candles = make_candles([100, 100, 110, 85])
+        downtrend = make_candles([120.0, 110.0, 105.0, 100.0])  # would veto a BUY
+
+        signal = strategy.generate_signal("BTC/USD", candles, {"1h": downtrend})
+
+        assert signal is not None
+        assert signal.side == OrderSide.SELL
+
+    def test_no_higher_tf_candles_matches_single_timeframe_behavior(self) -> None:
+        strategy = MovingAverageCrossoverStrategy(fast_period=2, slow_period=3)
+        candles = make_candles([100, 100, 90, 130])
+
+        signal = strategy.generate_signal("BTC/USD", candles, None)
+
+        assert signal is not None
+        assert signal.side == OrderSide.BUY
 
 
 class TestEMACrossoverStrategy:
@@ -266,6 +390,53 @@ class TestEMACrossoverStrategy:
         assert "EMA" in signal.reason
         assert f"{reference_ema_fast:.2f}" in signal.reason
         assert f"{reference_sma_fast:.2f}" not in signal.reason
+
+    def test_mtf_confirmation_suppresses_buy_when_higher_tf_not_aligned(self) -> None:
+        closes = [
+            100.0, 98.0, 96.0, 94.0, 92.0, 90.0, 88.0, 86.0, 84.0, 82.0, 80.0, 90.0,
+            100.0, 110.0,
+        ]
+        candles = make_candles(closes)
+        strategy = EMACrossoverStrategy(fast_period=5, slow_period=10)
+        downtrend = make_candles(
+            [110.0, 108.0, 106.0, 104.0, 102.0, 100.0, 98.0, 96.0, 94.0, 92.0, 90.0]
+        )
+
+        signal = strategy.generate_signal("BTC/USD", candles, {"1h": downtrend})
+
+        assert signal is None
+
+    def test_mtf_confirmation_allows_buy_when_all_higher_tf_aligned(self) -> None:
+        closes = [
+            100.0, 98.0, 96.0, 94.0, 92.0, 90.0, 88.0, 86.0, 84.0, 82.0, 80.0, 90.0,
+            100.0, 110.0,
+        ]
+        candles = make_candles(closes)
+        strategy = EMACrossoverStrategy(fast_period=5, slow_period=10)
+        uptrend = make_candles(
+            [90.0, 92.0, 94.0, 96.0, 98.0, 100.0, 102.0, 104.0, 106.0, 108.0, 110.0]
+        )
+
+        signal = strategy.generate_signal("BTC/USD", candles, {"1h": uptrend, "15m": uptrend})
+
+        assert signal is not None
+        assert signal.side == OrderSide.BUY
+
+    def test_mtf_confirmation_does_not_affect_sell_signal(self) -> None:
+        closes = [
+            100.0, 102.0, 104.0, 106.0, 108.0, 110.0, 112.0, 114.0, 116.0, 118.0, 120.0,
+            110.0, 100.0, 90.0,
+        ]
+        candles = make_candles(closes)
+        strategy = EMACrossoverStrategy(fast_period=5, slow_period=10)
+        downtrend = make_candles(
+            [110.0, 108.0, 106.0, 104.0, 102.0, 100.0, 98.0, 96.0, 94.0, 92.0, 90.0]
+        )
+
+        signal = strategy.generate_signal("BTC/USD", candles, {"1h": downtrend})
+
+        assert signal is not None
+        assert signal.side == OrderSide.SELL
 
 
 def make_ohlc_candles(closes: list[float]) -> pd.DataFrame:
@@ -438,3 +609,38 @@ class TestHeikinAshiConfluenceStrategy:
         candles = make_ohlc_candles([100.0] * 40)
 
         assert strategy.generate_signal("BTC/USD", candles) is None
+
+    def test_mtf_confirmation_suppresses_buy_when_higher_tf_not_aligned(self) -> None:
+        base = [100.0 - i * 0.3 for i in range(40)]
+        jump = [base[-1] + i * 3.0 for i in range(1, 9)]
+        candles = make_ohlc_candles((base + jump)[:42])
+        strategy = HeikinAshiConfluenceStrategy()
+        downtrend = make_candles([110.0 - i * 2.0 for i in range(11)])
+
+        signal = strategy.generate_signal("BTC/USD", candles, {"1h": downtrend})
+
+        assert signal is None
+
+    def test_mtf_confirmation_allows_buy_when_all_higher_tf_aligned(self) -> None:
+        base = [100.0 - i * 0.3 for i in range(40)]
+        jump = [base[-1] + i * 3.0 for i in range(1, 9)]
+        candles = make_ohlc_candles((base + jump)[:42])
+        strategy = HeikinAshiConfluenceStrategy()
+        uptrend = make_candles([90.0 + i * 2.0 for i in range(11)])
+
+        signal = strategy.generate_signal("BTC/USD", candles, {"1h": uptrend, "15m": uptrend})
+
+        assert signal is not None
+        assert signal.side == OrderSide.BUY
+
+    def test_mtf_confirmation_does_not_affect_sell_signal(self) -> None:
+        rise = [100.0 + i * 1.0 for i in range(40)]
+        decline = [rise[-1] - i * 3.0 for i in range(1, 9)]
+        candles = make_ohlc_candles((rise + decline)[:43])
+        strategy = HeikinAshiConfluenceStrategy()
+        downtrend = make_candles([110.0 - i * 2.0 for i in range(11)])  # would veto a BUY
+
+        signal = strategy.generate_signal("BTC/USD", candles, {"1h": downtrend})
+
+        assert signal is not None
+        assert signal.side == OrderSide.SELL

@@ -23,9 +23,9 @@ and [CLAUDE_PROJECT_STATUS.md](CLAUDE_PROJECT_STATUS.md) for current implementat
    uv run pytest -v
    ```
 
-   251 tests — config validation, the Kraken client, order executor, database layer, the webhook
+   273 tests — config validation, the Kraken client, order executor, database layer, the webhook
    API, the strategy framework, the backtesting engine, risk management, and the trading engine.
-   All currently pass, at ~99.7% coverage.
+   All currently pass, at ~99.8% coverage.
 
 3. **Backtest a strategy before it ever touches an order** — walk-forward simulation against real
    historical Kraken candles (no live/paper orders involved, no API credentials needed):
@@ -48,6 +48,11 @@ and [CLAUDE_PROJECT_STATUS.md](CLAUDE_PROJECT_STATUS.md) for current implementat
    before trusting any result** — it covers how to interpret each metric (a low win rate doesn't
    mean a bad strategy; a good result on one window doesn't mean it generalizes) and the engine's
    current limitations (capped history, no lookahead but still idealized fills, in-sample only).
+
+   Running on `--timeframe 15m`, `1h`, `4h`, or `1d` automatically adds multi-timeframe entry
+   confirmation against two higher timeframes (15m→1h+4h, 1h→4h+1d, 4h→1d+1w, 1d→1w+2w — trend on
+   the highest, setup on the middle; entries only, exits are never filtered). See
+   [docs/trading-bot-design.md → "Multi-Timeframe Entry Confirmation"](docs/trading-bot-design.md#multi-timeframe-entry-confirmation).
 
 4. **Run the bot autonomously** (paper trading by default, hits live Kraken market data):
 

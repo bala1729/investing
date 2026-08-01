@@ -14,6 +14,12 @@ arbitrary intervals). Kraken's public OHLC endpoint also caps history at ~720
 candles regardless of --limit — for a longer lookback, use a coarser
 --timeframe (e.g. 1d or 1w), not a bigger --limit.
 
+--timeframe 15m, 1h, 4h, and 1d automatically add multi-timeframe entry
+confirmation against two higher timeframes (15m -> 1h+4h, 1h -> 4h+1d,
+4h -> 1d+1w, 1d -> 1w+2w) — the strategy's crossover still triggers on
+--timeframe candles; the higher timeframes only gate whether a BUY goes
+through. See docs/trading-bot-design.md ("Multi-Timeframe Entry Confirmation").
+
 See docs/trading-bot-design.md ("Backtesting Guide") for how to interpret the results.
 """
 
@@ -21,8 +27,10 @@ import argparse
 import asyncio
 from decimal import Decimal
 
+import pandas as pd
+
 from src.backtest.engine import Backtester, buy_and_hold_return_pct
-from src.bot.strategies.base import ohlcv_to_dataframe
+from src.bot.strategies.base import MTF_CONFIRMATION_MAP, ohlcv_to_dataframe
 from src.bot.strategies.examples.ema_crossover import EMACrossoverStrategy
 from src.bot.strategies.examples.heikin_ashi_confluence import HeikinAshiConfluenceStrategy
 from src.bot.strategies.examples.moving_average_crossover import MovingAverageCrossoverStrategy
@@ -107,8 +115,26 @@ def parse_args() -> argparse.Namespace:
 async def main() -> None:
     args = parse_args()
 
+    higher_tf_candles: dict[str, pd.DataFrame] | None = None
+    mtf_timeframes = MTF_CONFIRMATION_MAP.get(args.timeframe)
+
     async with KrakenClient() as client:
         ohlcv = await client.fetch_ohlcv(args.symbol, timeframe=args.timeframe, limit=args.limit)
+
+        if mtf_timeframes is not None:
+            higher_tf_candles = {}
+            print(f"Multi-timeframe confirmation: {args.timeframe} -> {', '.join(mtf_timeframes)}")
+            for tf in mtf_timeframes:
+                higher_ohlcv = await client.fetch_ohlcv(args.symbol, timeframe=tf, limit=args.limit)
+                higher_df = ohlcv_to_dataframe(higher_ohlcv)
+                higher_tf_candles[tf] = higher_df
+                if len(higher_df) > 0:
+                    print(
+                        f"  {tf}: {len(higher_df)} candles, "
+                        f"{higher_df.index[0]} to {higher_df.index[-1]}"
+                    )
+                else:
+                    print(f"  {tf}: no candles available")
 
     candles = ohlcv_to_dataframe(ohlcv)
     strategy_cls = STRATEGIES[args.strategy]
@@ -126,7 +152,7 @@ async def main() -> None:
         fee_pct=args.fee_pct,
         slippage_pct=args.slippage_pct,
     )
-    result = backtester.run(candles)
+    result = backtester.run(candles, higher_tf_candles=higher_tf_candles)
 
     win_rate = result.win_rate_pct
     win_rate_display = "n/a" if win_rate is None else f"{win_rate:.2f}%"

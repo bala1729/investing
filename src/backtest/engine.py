@@ -139,11 +139,22 @@ class Backtester:
         self._fee_pct = fee_pct
         self._slippage_pct = slippage_pct
 
-    def run(self, candles: pd.DataFrame) -> BacktestResult:
+    def run(
+        self,
+        candles: pd.DataFrame,
+        higher_tf_candles: dict[str, pd.DataFrame] | None = None,
+    ) -> BacktestResult:
         """Run the strategy over historical candles, oldest first.
 
         Args:
             candles: OHLCV data as produced by ohlcv_to_dataframe(), oldest first.
+            higher_tf_candles: Optional higher-timeframe OHLCV data, keyed by
+                timeframe string, for strategies with multi-timeframe entry
+                confirmation. At each primary (entry) bar, each higher-timeframe
+                DataFrame is sliced to candles that opened at or before that
+                bar's own timestamp - a deliberately conservative cutoff that
+                may exclude the most-recent higher-timeframe candle but never
+                leaks data the primary bar couldn't have seen yet.
 
         Returns:
             The simulated trade log and resulting performance metrics.
@@ -200,7 +211,16 @@ class Backtester:
                     base_balance = Decimal("0")
                     avg_entry_price = Decimal("0")
 
-            pending_signal = self._strategy.generate_signal(self._symbol, candles.iloc[: i + 1])
+            sliced_higher_tf_candles = None
+            if higher_tf_candles is not None:
+                current_ts = candles.index[i]
+                sliced_higher_tf_candles = {
+                    tf: df[df.index <= current_ts] for tf, df in higher_tf_candles.items()
+                }
+
+            pending_signal = self._strategy.generate_signal(
+                self._symbol, candles.iloc[: i + 1], sliced_higher_tf_candles
+            )
 
             mark_price = Decimal(str(candles.iloc[i]["close"]))
             equity_curve.append(quote_balance + base_balance * mark_price)

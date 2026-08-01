@@ -3,7 +3,7 @@
 import pandas as pd
 import pandas_ta as ta
 
-from src.bot.strategies.base import Signal, Strategy, detect_crossover
+from src.bot.strategies.base import Signal, Strategy, detect_crossover, mtf_trend_confirms_buy
 from src.exchange.executor import OrderSide
 
 
@@ -99,7 +99,12 @@ class HeikinAshiConfluenceStrategy(Strategy):
         )
         return warmup + 1
 
-    def generate_signal(self, symbol: str, candles: pd.DataFrame) -> Signal | None:
+    def generate_signal(
+        self,
+        symbol: str,
+        candles: pd.DataFrame,
+        higher_tf_candles: dict[str, pd.DataFrame] | None = None,
+    ) -> Signal | None:
         if len(candles) < self._min_candles:
             return None
 
@@ -143,6 +148,11 @@ class HeikinAshiConfluenceStrategy(Strategy):
             rsi_overbought=self._rsi_overbought,
             close=ha_close.iloc[-1],
             bb_upper=bb_upper.iloc[-1],
+        ):
+            return None
+
+        if higher_tf_candles and not mtf_trend_confirms_buy(
+            higher_tf_candles, self._fast_period, self._slow_period, use_ema=True
         ):
             return None
 

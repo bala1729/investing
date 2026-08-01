@@ -12,7 +12,7 @@ assuming either is universally superior.
 import pandas as pd
 import pandas_ta as ta
 
-from src.bot.strategies.base import Signal, Strategy, detect_crossover
+from src.bot.strategies.base import Signal, Strategy, detect_crossover, mtf_trend_confirms_buy
 from src.exchange.executor import OrderSide
 
 
@@ -31,7 +31,12 @@ class EMACrossoverStrategy(Strategy):
         self._fast_period = fast_period
         self._slow_period = slow_period
 
-    def generate_signal(self, symbol: str, candles: pd.DataFrame) -> Signal | None:
+    def generate_signal(
+        self,
+        symbol: str,
+        candles: pd.DataFrame,
+        higher_tf_candles: dict[str, pd.DataFrame] | None = None,
+    ) -> Signal | None:
         if len(candles) < self._slow_period + 1:
             return None
 
@@ -41,6 +46,12 @@ class EMACrossoverStrategy(Strategy):
         side = detect_crossover(fast, slow)
         if side is None:
             return None
+
+        if side == OrderSide.BUY and higher_tf_candles:
+            if not mtf_trend_confirms_buy(
+                higher_tf_candles, self._fast_period, self._slow_period, use_ema=True
+            ):
+                return None
 
         direction = "above" if side == OrderSide.BUY else "below"
         return Signal(

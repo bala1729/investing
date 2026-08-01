@@ -9,9 +9,10 @@ import asyncio
 from dataclasses import dataclass
 from decimal import Decimal
 
+import pandas as pd
 from loguru import logger
 
-from src.bot.strategies.base import Signal, Strategy, ohlcv_to_dataframe
+from src.bot.strategies.base import MTF_CONFIRMATION_MAP, Signal, Strategy, ohlcv_to_dataframe
 from src.config import Settings, get_settings
 from src.database.repository import UnitOfWork
 from src.exchange.executor import Order, OrderExecutor, OrderSide, OrderStatus
@@ -194,7 +195,16 @@ class TradingEngine:
         """
         ohlcv = await self._client.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit + 1)
         candles = ohlcv_to_dataframe(ohlcv[:-1])
-        signal = strategy.generate_signal(symbol, candles)
+
+        higher_tf_candles: dict[str, pd.DataFrame] | None = None
+        mtf_timeframes = MTF_CONFIRMATION_MAP.get(timeframe)
+        if mtf_timeframes is not None:
+            higher_tf_candles = {}
+            for tf in mtf_timeframes:
+                higher_ohlcv = await self._client.fetch_ohlcv(symbol, timeframe=tf, limit=limit + 1)
+                higher_tf_candles[tf] = ohlcv_to_dataframe(higher_ohlcv[:-1])
+
+        signal = strategy.generate_signal(symbol, candles, higher_tf_candles)
         if signal is None:
             return EngineResult(executed=False, reason="Strategy produced no signal")
         return await self.process_signal(signal)

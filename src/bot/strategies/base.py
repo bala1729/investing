@@ -5,8 +5,23 @@ from dataclasses import dataclass
 from typing import Any
 
 import pandas as pd
+import pandas_ta as ta
 
 from src.exchange.executor import OrderSide
+
+MTF_CONFIRMATION_MAP: dict[str, tuple[str, str]] = {
+    "15m": ("1h", "4h"),
+    "1h": ("4h", "1d"),
+    "4h": ("1d", "1w"),
+    "1d": ("1w", "2w"),
+}
+"""Entry timeframe -> (setup timeframe, trend timeframe), both higher than the
+entry timeframe. Standard top-down multi-timeframe analysis: the strategy's
+own crossover trigger fires on the entry (primary/--timeframe) candles as
+always, but a BUY only goes through if the higher setup and trend timeframes
+independently confirm the same direction. Timeframes with no entry here (1w,
+2w, and the remaining sub-hour ones) get no confirmation filtering -
+single-timeframe behavior, unchanged."""
 
 
 @dataclass(frozen=True)
@@ -45,6 +60,36 @@ def detect_crossover(fast: pd.Series, slow: pd.Series) -> OrderSide | None:
     return None
 
 
+def mtf_trend_confirms_buy(
+    higher_tf_candles: dict[str, pd.DataFrame],
+    fast_period: int,
+    slow_period: int,
+    use_ema: bool = True,
+) -> bool:
+    """Whether every higher timeframe in `higher_tf_candles` currently shows fast MA > slow MA.
+
+    Gates an entry signal generated on a strategy's primary (entry) timeframe
+    behind confirmation that the higher ("setup"/"trend") timeframes independently
+    agree with the bullish direction right now - not a fresh cross on each one
+    (higher timeframes cross far less often, so requiring a simultaneous fresh
+    cross on all of them would rarely align with a fast-moving entry-timeframe
+    trigger), just that the trend is currently pointed the same way. Only meant
+    for entries: exits stay unfiltered so risk management is never harder to
+    trigger than an entry.
+    """
+    ma = ta.ema if use_ema else ta.sma
+    for candles in higher_tf_candles.values():
+        if len(candles) < slow_period + 1:
+            return False
+        fast = ma(candles["close"], length=fast_period)
+        slow = ma(candles["close"], length=slow_period)
+        if pd.isna(fast.iloc[-1]) or pd.isna(slow.iloc[-1]):
+            return False
+        if not (fast.iloc[-1] > slow.iloc[-1]):
+            return False
+    return True
+
+
 def ohlcv_to_dataframe(ohlcv: list[list[Any]]) -> pd.DataFrame:
     """Convert raw ccxt OHLCV rows into an indexed pandas DataFrame.
 
@@ -74,13 +119,22 @@ class Strategy(ABC):
         self.name = name or type(self).__name__
 
     @abstractmethod
-    def generate_signal(self, symbol: str, candles: pd.DataFrame) -> Signal | None:
+    def generate_signal(
+        self,
+        symbol: str,
+        candles: pd.DataFrame,
+        higher_tf_candles: dict[str, pd.DataFrame] | None = None,
+    ) -> Signal | None:
         """Analyze candle data and return a trading signal, or None to take no action.
 
         Args:
             symbol: Trading pair symbol the candles belong to.
             candles: OHLCV data indexed by timestamp, oldest first (see
                 ohlcv_to_dataframe).
+            higher_tf_candles: Optional higher-timeframe OHLCV data, keyed by
+                timeframe string, for strategies that apply multi-timeframe
+                entry confirmation (see MTF_CONFIRMATION_MAP). None when the
+                primary (entry) timeframe has no higher timeframes mapped.
 
         Returns:
             A Signal to act on, or None if the strategy has no opinion right now.

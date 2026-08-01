@@ -404,6 +404,42 @@ Run `uv run python scripts/backtest.py --help` for the full flag list.
 
 ---
 
+## Multi-Timeframe Entry Confirmation
+
+All three example strategies apply a standard top-down multi-timeframe filter on top of their own
+crossover trigger: the timeframe a strategy runs on is the **entry** timeframe (it still generates
+the actual trigger, unchanged), and two *higher* timeframes must independently show trend alignment
+(`fast MA > slow MA`, using the strategy's own periods) before an entry is taken — trend on the
+highest, setup on the middle, precise timing on the one you actually trade:
+
+| Entry (`--timeframe`) | Setup | Trend |
+|---|---|---|
+| `15m` | `1h` | `4h` |
+| `1h` | `4h` | `1d` |
+| `4h` | `1d` | `1w` |
+| `1d` | `1w` | `2w` |
+
+This mapping lives in `MTF_CONFIRMATION_MAP` (`src/bot/strategies/base.py`), keyed by the entry
+timeframe. Every other timeframe (`1w`, `2w`, and the remaining sub-hour ones) has no mapping, so
+it behaves exactly as before — single timeframe, no filtering.
+
+Confirmation applies to **entries only** — exits (SELL) are never filtered, consistent with the
+existing principle that an exit should never be harder to trigger than an entry (risk management
+shouldn't be fighting a confirmation filter to get out of a position). Confirmation is *trend
+alignment*, not a fresh crossover on each higher timeframe: requiring a simultaneous fresh cross on
+all three timeframes would almost never align, since the entry timeframe crosses far more often
+than the higher ones above it.
+
+**On the Kraken history cap:** unlike an earlier (incorrect) version of this feature that put the
+confirmation timeframes *below* the entry timeframe, this direction has no data-coverage problem.
+Kraken's ~720-candle cap (see above) still limits how far back the *entry* timeframe's own history
+reaches — same as it always did for a single-timeframe backtest — but the higher confirmation
+timeframes cover a longer real-world span per candle, so their ~720-candle windows always reach
+back at least as far as the entry timeframe's does, usually much further. There's nothing to flag
+here beyond the cap that already applied before this feature existed.
+
+---
+
 ## Security Best Practices
 
 1. **API Keys**: Use environment variables, never commit to git

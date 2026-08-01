@@ -12,6 +12,7 @@ from src.backtest.engine import (
     buy_and_hold_return_pct,
 )
 from src.bot.strategies.base import Signal, Strategy
+from src.bot.strategies.examples.ema_crossover import EMACrossoverStrategy
 from src.exchange.executor import OrderSide
 
 
@@ -22,8 +23,30 @@ class ScriptedStrategy(Strategy):
         super().__init__(name="scripted")
         self._signals = signals
 
-    def generate_signal(self, symbol: str, candles: pd.DataFrame) -> Signal | None:
+    def generate_signal(
+        self,
+        symbol: str,
+        candles: pd.DataFrame,
+        higher_tf_candles: dict[str, pd.DataFrame] | None = None,
+    ) -> Signal | None:
         return self._signals.get(len(candles) - 1)
+
+
+class RecordingStrategy(Strategy):
+    """Test double: records the higher_tf_candles dict it was given on every call."""
+
+    def __init__(self) -> None:
+        super().__init__(name="recording")
+        self.calls: list[tuple[pd.Timestamp, dict[str, pd.DataFrame] | None]] = []
+
+    def generate_signal(
+        self,
+        symbol: str,
+        candles: pd.DataFrame,
+        higher_tf_candles: dict[str, pd.DataFrame] | None = None,
+    ) -> Signal | None:
+        self.calls.append((candles.index[-1], higher_tf_candles))
+        return None
 
 
 def buy(reason: str = "go long") -> Signal:
@@ -256,6 +279,63 @@ class TestBacktesterRun:
         assert result.trades[1].amount == Decimal("2.5")
         # flat prices throughout: no realized or unrealized gain
         assert result.ending_balance == Decimal("1000")
+
+    def test_higher_tf_candles_are_sliced_without_lookahead(self) -> None:
+        strategy = RecordingStrategy()
+        candles = make_candles([100.0, 101.0, 102.0, 103.0, 104.0])
+        higher_tf = make_candles([50.0 + i for i in range(20)])  # denser series, same start
+        backtester = Backtester(strategy, "BTC/USD", starting_balance=Decimal("1000"))
+
+        backtester.run(candles, higher_tf_candles={"1h": higher_tf})
+
+        assert len(strategy.calls) == 5
+        for primary_ts, higher_tf_candles_seen in strategy.calls:
+            assert higher_tf_candles_seen is not None
+            sliced = higher_tf_candles_seen["1h"]
+            assert (sliced.index <= primary_ts).all()
+
+    def test_no_higher_tf_candles_passes_none_through(self) -> None:
+        strategy = RecordingStrategy()
+        candles = make_candles([100.0, 101.0, 102.0])
+        backtester = Backtester(strategy, "BTC/USD", starting_balance=Decimal("1000"))
+
+        backtester.run(candles)
+
+        assert len(strategy.calls) == 3
+        assert all(higher_tf_candles is None for _, higher_tf_candles in strategy.calls)
+
+    def test_mtf_confirmation_suppresses_an_otherwise_valid_buy(self) -> None:
+        closes = [
+            100.0, 98.0, 96.0, 94.0, 92.0, 90.0, 88.0, 86.0, 84.0, 82.0, 80.0, 90.0,
+            100.0, 110.0, 115.0,
+        ]
+        candles = make_candles(closes)
+        downtrend = make_candles(
+            [130.0 - i * 2.0 for i in range(20)], closes=[130.0 - i * 2.0 for i in range(20)]
+        )
+        strategy = EMACrossoverStrategy(fast_period=5, slow_period=10)
+        backtester = Backtester(strategy, "BTC/USD", starting_balance=Decimal("1000"))
+
+        result = backtester.run(candles, higher_tf_candles={"1h": downtrend})
+
+        assert result.trades == []
+
+    def test_mtf_confirmation_allows_a_buy_when_higher_tf_aligned(self) -> None:
+        closes = [
+            100.0, 98.0, 96.0, 94.0, 92.0, 90.0, 88.0, 86.0, 84.0, 82.0, 80.0, 90.0,
+            100.0, 110.0, 115.0,
+        ]
+        candles = make_candles(closes)
+        uptrend = make_candles(
+            [50.0 + i * 2.0 for i in range(20)], closes=[50.0 + i * 2.0 for i in range(20)]
+        )
+        strategy = EMACrossoverStrategy(fast_period=5, slow_period=10)
+        backtester = Backtester(strategy, "BTC/USD", starting_balance=Decimal("1000"))
+
+        result = backtester.run(candles, higher_tf_candles={"1h": uptrend})
+
+        assert len(result.trades) == 1
+        assert result.trades[0].side == OrderSide.BUY
 
 
 class TestBacktestResultProperties:

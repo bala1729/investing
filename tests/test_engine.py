@@ -369,7 +369,12 @@ class ScriptedStrategy(Strategy):
         self._signal = signal
         self.calls = 0
 
-    def generate_signal(self, symbol: str, candles: pd.DataFrame) -> Signal | None:
+    def generate_signal(
+        self,
+        symbol: str,
+        candles: pd.DataFrame,
+        higher_tf_candles: dict[str, pd.DataFrame] | None = None,
+    ) -> Signal | None:
         self.calls += 1
         return self._signal
 
@@ -381,9 +386,16 @@ class RecordingStrategy(Strategy):
         super().__init__(name="recording")
         self._signal = signal
         self.received_candles: pd.DataFrame | None = None
+        self.received_higher_tf_candles: dict[str, pd.DataFrame] | None = None
 
-    def generate_signal(self, symbol: str, candles: pd.DataFrame) -> Signal | None:
+    def generate_signal(
+        self,
+        symbol: str,
+        candles: pd.DataFrame,
+        higher_tf_candles: dict[str, pd.DataFrame] | None = None,
+    ) -> Signal | None:
         self.received_candles = candles
+        self.received_higher_tf_candles = higher_tf_candles
         return self._signal
 
 
@@ -395,7 +407,7 @@ class TestRunStrategyOnce:
         engine = make_engine(client, executor, db_settings)
         strategy = ScriptedStrategy(None)
 
-        result = await engine.run_strategy_once(strategy, "BTC/USD")
+        result = await engine.run_strategy_once(strategy, "BTC/USD", timeframe="1w")
 
         assert result.executed is False
         assert result.reason is not None
@@ -428,9 +440,9 @@ class TestRunStrategyOnce:
         engine = make_engine(client, executor, db_settings)
         strategy = RecordingStrategy(None)
 
-        await engine.run_strategy_once(strategy, "BTC/USD", timeframe="1h", limit=2)
+        await engine.run_strategy_once(strategy, "BTC/USD", timeframe="1w", limit=2)
 
-        client.fetch_ohlcv.assert_awaited_once_with("BTC/USD", timeframe="1h", limit=3)
+        client.fetch_ohlcv.assert_awaited_once_with("BTC/USD", timeframe="1w", limit=3)
         assert strategy.received_candles is not None
         assert len(strategy.received_candles) == 2
         assert strategy.received_candles.iloc[-1]["close"] == 101.0
@@ -447,6 +459,45 @@ class TestRunStrategyOnce:
         assert result.executed is False
         assert strategy.received_candles is not None
         assert len(strategy.received_candles) == 0
+
+    async def test_fetches_higher_timeframes_for_a_mapped_entry_timeframe(
+        self, db_settings: Settings
+    ) -> None:
+        client = make_client()
+        client.fetch_ohlcv.return_value = [
+            [1, 100.0, 100.0, 100.0, 100.0, 1.0],
+            [2, 101.0, 101.0, 101.0, 101.0, 1.0],
+        ]
+        executor = make_executor()
+        engine = make_engine(client, executor, db_settings)
+        strategy = RecordingStrategy(None)
+
+        await engine.run_strategy_once(strategy, "BTC/USD", timeframe="1h", limit=1)
+
+        assert client.fetch_ohlcv.await_count == 3
+        called_timeframes = {
+            call.kwargs["timeframe"] for call in client.fetch_ohlcv.await_args_list
+        }
+        assert called_timeframes == {"1h", "4h", "1d"}
+        assert strategy.received_higher_tf_candles is not None
+        assert set(strategy.received_higher_tf_candles) == {"4h", "1d"}
+
+    async def test_does_not_fetch_higher_timeframes_for_an_unmapped_entry_timeframe(
+        self, db_settings: Settings
+    ) -> None:
+        client = make_client()
+        client.fetch_ohlcv.return_value = [
+            [1, 100.0, 100.0, 100.0, 100.0, 1.0],
+            [2, 101.0, 101.0, 101.0, 101.0, 1.0],
+        ]
+        executor = make_executor()
+        engine = make_engine(client, executor, db_settings)
+        strategy = RecordingStrategy(None)
+
+        await engine.run_strategy_once(strategy, "BTC/USD", timeframe="1w", limit=1)
+
+        client.fetch_ohlcv.assert_awaited_once()
+        assert strategy.received_higher_tf_candles is None
 
 
 class TestRunForever:

@@ -264,3 +264,195 @@ one (SOL, by losing less than an even worse buy-and-hold).
    asset/timeframe. Outperforming confluence on one grid is a relative comparison, not proof of a
    standalone edge — treat it as "confluence added complexity without demonstrated benefit" more
    than "EMA(10,30) works."
+
+---
+
+## 2026-08-01 (continued) — Multi-timeframe entry confirmation sweep
+
+**⚠️ Correction (2026-08-01, later same day): this entire section used the wrong MTF direction.**
+It checked *lower* timeframes as confirmation (e.g. `4h` entry confirmed by `1h`+`15m`), which is
+backwards from standard top-down multi-timeframe analysis — the higher timeframes should confirm
+the trend, and the timeframe you trade on is the entry. This was caught and fixed; the corrected
+implementation and a full re-sweep are in the next section,
+["Multi-timeframe entry confirmation sweep (corrected direction)"](#2026-08-01-continued-2--multi-timeframe-entry-confirmation-sweep-corrected-direction).
+The numbers below are kept for the record but should not be used to judge the feature.
+
+**What changed:** All three strategies now require lower-timeframe trend alignment before an entry
+(not an exit) fires — `4h` confirms against `1h`+`15m`, `1d` confirms against `4h`+`1h`. See
+[`docs/trading-bot-design.md` → "Multi-Timeframe Entry Confirmation"](trading-bot-design.md#multi-timeframe-entry-confirmation).
+This re-runs the `ema` and `confluence` sweeps from above, but **only on `4h` and `1d`** — the two
+timeframes actually affected by this change (`1h`/`1w` have no lower-timeframe mapping and are
+unchanged from the entries earlier in this file).
+
+**Commands run:** `scripts/backtest.py --strategy ema|confluence --symbol {BTC/USD,ETH/USD,SOL/USD} --timeframe {4h,1d} --limit 720`
+(default periods, `--fee-pct`/`--slippage-pct` at CLI defaults).
+
+### Results
+
+| Strategy | Symbol | TF | Return | Buy&Hold | Beat B&H? | Trades | Closed | Win Rate | Max DD |
+|---|---|---|---|---|---|---|---|---|---|
+| ema | BTC/USD | 4h | -3.52% | -6.21% | yes | 4 | 2 | 0.00% | 3.52% |
+| ema | BTC/USD | 1d | 0.00% | +6.92% | no | 0 | 0 | n/a | 0.00% |
+| ema | ETH/USD | 4h | -1.95% | -10.08% | yes | 2 | 1 | 0.00% | 4.45% |
+| ema | ETH/USD | 1d | 0.00% | -27.75% | yes* | 0 | 0 | n/a | 0.00% |
+| ema | SOL/USD | 4h | -3.63% | -10.56% | yes | 2 | 1 | 0.00% | 3.63% |
+| ema | SOL/USD | 1d | 0.00% | -49.21% | yes* | 0 | 0 | n/a | 0.00% |
+| confluence | BTC/USD | 4h | -4.15% | -6.20% | yes | 4 | 2 | 0.00% | 4.76% |
+| confluence | BTC/USD | 1d | +0.58% | +6.93% | no | 2 | 1 | 100.00% | 4.31% |
+| confluence | ETH/USD | 4h | -0.65% | -10.05% | yes | 2 | 1 | 0.00% | 4.54% |
+| confluence | ETH/USD | 1d | 0.00% | -27.73% | yes* | 0 | 0 | n/a | 0.00% |
+| confluence | SOL/USD | 4h | -2.04% | -10.56% | yes | 2 | 1 | 0.00% | 2.04% |
+| confluence | SOL/USD | 1d | 0.00% | -49.21% | yes* | 0 | 0 | n/a | 0.00% |
+
+`*` = zero trades executed, not a skillful call — see takeaway 2 below. On these rows "beats
+buy-and-hold" only means "didn't lose money by holding," not "the strategy did anything."
+
+### Why every 1d row (except BTC) shows 0 trades
+
+`--limit 720` on `1d` requests ~2 years of daily candles, but its confirmation timeframes (`4h`,
+`1h`) are themselves capped at ~720 candles by Kraken's public endpoint — `1h` only reaches back to
+2026-07-02 (~30 days) and `4h` only to 2026-04-04 (~120 days). Every `1d` bar older than that has no
+lower-timeframe data to confirm against, so it can never produce a confirmed entry, exactly as
+flagged as a known limitation in the design doc before this sweep was run. BTC/USD 1d got lucky
+enough to have one crossover land inside the ~30-day confirmable window; ETH and SOL didn't.
+
+### Before/after comparison — same symbol/timeframe rows, MTF confirmation off vs on
+
+| Strategy | Symbol | TF | Return (no MTF) | Return (MTF) | Trades (no MTF → MTF) |
+|---|---|---|---|---|---|
+| ema | BTC/USD | 4h | -16.37% | -3.52% | 24 → 4 |
+| ema | BTC/USD | 1d | +21.00% | 0.00% | 26 → 0 |
+| ema | ETH/USD | 4h | -9.10% | -1.95% | 22 → 2 |
+| ema | ETH/USD | 1d | +14.20% | 0.00% | 21 → 0 |
+| ema | SOL/USD | 4h | -9.00% | -3.63% | 24 → 2 |
+| ema | SOL/USD | 1d | -38.86% | 0.00% | 28 → 0 |
+| confluence | BTC/USD | 4h | -12.09% | -4.15% | 30 → 4 |
+| confluence | BTC/USD | 1d | -7.31% | +0.58% | 30 → 2 |
+| confluence | ETH/USD | 4h | -16.51% | -0.65% | 32 → 2 |
+| confluence | ETH/USD | 1d | -34.75% | 0.00% | 33 → 0 |
+| confluence | SOL/USD | 4h | +16.34% | -2.04% | 28 → 2 |
+| confluence | SOL/USD | 1d | -26.31% | 0.00% | 38 → 0 |
+
+### Key takeaways
+
+1. **On `4h`, MTF confirmation cut trade count by roughly 6-15x and improved (or barely changed)
+   the return on every single row** for both strategies — every `4h` return moved closer to zero
+   or flipped positive relative to its pre-MTF number, and every `4h` row beat buy-and-hold
+   afterward versus only some doing so before. This is the one genuinely encouraging result in
+   this sweep: on `4h`, where the confirmation data actually covers the whole backtest window,
+   filtering out unconfirmed entries reduced losses substantially across the board.
+2. **On `1d`, the result is mostly an artifact of the data cap, not a strategy improvement.** 5 of
+   6 `1d` rows dropped to 0 trades because `1h`/`4h` confirmation data doesn't reach back far
+   enough to cover a ~720-candle daily window (see explanation above). A 0.00% return "beating"
+   a strongly negative buy-and-hold is not the strategy doing anything skillful — it's the
+   strategy being unable to act at all for almost the entire backtest. The one row that did trade
+   (confluence BTC/USD 1d) turned a losing pre-MTF result (-7.31%) into a small gain (+0.58%) on
+   a single closed trade — informative as a data point, not as evidence of an edge.
+3. **This makes `1d` backtests of MTF-confirmed strategies effectively untestable with the
+   current data source** until either the backtest window is shortened to match `1h`'s ~30-day
+   coverage, or a paid/deeper historical data source replaces Kraken's public endpoint (already
+   flagged as a "Next up" item). The live paper-trading bot doesn't have this problem — it only
+   ever needs *recent* lower-timeframe candles, which Kraken's cap always covers going forward.
+4. **The `4h` result is worth taking seriously enough to revisit before choosing what to paper
+   trade next**, but it's still a single ~120-day window on 2 closed trades per asset at best —
+   the Backtesting Guide's own ~20-30 closed trade threshold for trusting a win rate is nowhere
+   close to met here. Treat it as a promising direction, not a validated edge.
+
+---
+
+## 2026-08-01 (continued 2) — Multi-timeframe entry confirmation sweep (corrected direction)
+
+**What changed:** The section above had the MTF direction backwards. Standard top-down
+multi-timeframe analysis confirms the trend on *higher* timeframes and times the entry on the
+timeframe you actually trade — not the other way around. Fixed: the strategy's crossover still
+triggers on `--timeframe` candles exactly as before; confirmation now checks two *higher*
+timeframes for trend alignment. New mapping (`MTF_CONFIRMATION_MAP` in `src/bot/strategies/base.py`):
+
+| Entry (`--timeframe`) | Setup | Trend |
+|---|---|---|
+| `15m` | `1h` | `4h` |
+| `1h` | `4h` | `1d` |
+| `4h` | `1d` | `1w` |
+| `1d` | `1w` | `2w` |
+
+This also removes the data-coverage problem the previous section flagged as a known limitation —
+higher timeframes always have *at least* as much history as the entry timeframe within Kraken's
+~720-candle cap, usually much more, so there's no gap to worry about (see
+[`docs/trading-bot-design.md` → "Multi-Timeframe Entry Confirmation"](trading-bot-design.md#multi-timeframe-entry-confirmation)).
+
+**Commands run:** `scripts/backtest.py --strategy ema|confluence --symbol {BTC/USD,ETH/USD,SOL/USD} --timeframe {15m,1h,4h,1d} --limit 720`
+(default periods, `--fee-pct`/`--slippage-pct` at CLI defaults).
+
+### Results
+
+| Strategy | Symbol | Entry TF | Confirms against | Return | Buy&Hold | Beat B&H? | Trades | Closed | Win Rate | Max DD |
+|---|---|---|---|---|---|---|---|---|---|---|
+| ema | BTC/USD | 15m | 1h+4h | -1.03% | -1.89% | yes | 2 | 1 | 0.00% | 1.03% |
+| ema | BTC/USD | 1h | 4h+1d | -1.57% | +2.28% | no | 4 | 2 | 0.00% | 3.14% |
+| ema | BTC/USD | 4h | 1d+1w | 0.00% | -6.21% | yes* | 0 | 0 | n/a | 0.00% |
+| ema | BTC/USD | 1d | 1w+2w | +40.99% | +6.92% | yes | 16 | 8 | 37.50% | 21.41% |
+| ema | ETH/USD | 15m | 1h+4h | -6.16% | -0.55% | no | 8 | 4 | 0.00% | 6.16% |
+| ema | ETH/USD | 1h | 4h+1d | -0.91% | +8.95% | no | 14 | 7 | 42.86% | 7.55% |
+| ema | ETH/USD | 4h | 1d+1w | 0.00% | -10.11% | yes* | 0 | 0 | n/a | 0.00% |
+| ema | ETH/USD | 1d | 1w+2w | -22.75% | -27.78% | yes | 4 | 2 | 0.00% | 23.63% |
+| ema | SOL/USD | 15m | 1h+4h | -2.41% | -2.71% | yes | 2 | 1 | 0.00% | 3.24% |
+| ema | SOL/USD | 1h | 4h+1d | -6.69% | -10.75% | yes | 8 | 4 | 0.00% | 6.81% |
+| ema | SOL/USD | 4h | 1d+1w | 0.00% | -10.61% | yes* | 0 | 0 | n/a | 0.00% |
+| ema | SOL/USD | 1d | 1w+2w | -10.35% | -49.23% | yes | 12 | 6 | 33.33% | 44.25% |
+| confluence | BTC/USD | 15m | 1h+4h | 0.00% | -1.89% | yes* | 0 | 0 | n/a | 0.00% |
+| confluence | BTC/USD | 1h | 4h+1d | +1.81% | +2.29% | no | 2 | 1 | 100.00% | 1.27% |
+| confluence | BTC/USD | 4h | 1d+1w | -0.54% | -6.20% | yes | 4 | 2 | 50.00% | 6.78% |
+| confluence | BTC/USD | 1d | 1w+2w | -8.24% | +6.92% | no | 6 | 3 | 0.00% | 12.87% |
+| confluence | ETH/USD | 15m | 1h+4h | -0.26% | -0.55% | yes | 2 | 1 | 0.00% | 0.83% |
+| confluence | ETH/USD | 1h | 4h+1d | -4.38% | +8.95% | no | 12 | 6 | 33.33% | 5.91% |
+| confluence | ETH/USD | 4h | 1d+1w | 0.00% | -10.11% | yes* | 0 | 0 | n/a | 0.00% |
+| confluence | ETH/USD | 1d | 1w+2w | -21.98% | -27.77% | yes | 4 | 2 | 0.00% | 21.98% |
+| confluence | SOL/USD | 15m | 1h+4h | 0.00% | -2.73% | yes* | 0 | 0 | n/a | 0.00% |
+| confluence | SOL/USD | 1h | 4h+1d | -1.87% | -10.77% | yes | 2 | 1 | 0.00% | 2.39% |
+| confluence | SOL/USD | 4h | 1d+1w | 0.00% | -10.61% | yes* | 0 | 0 | n/a | 0.00% |
+| confluence | SOL/USD | 1d | 1w+2w | -5.09% | -49.23% | yes | 4 | 2 | 50.00% | 15.55% |
+
+`*` = zero trades executed — the higher-timeframe trend gate never once aligned bullish anywhere
+in the backtest window, so "beats buy-and-hold" here means "did nothing while the asset fell,"
+not "the strategy performed well." Verified directly for the `4h` entry / BTC/USD case: walking
+the exact backtester logic bar-by-bar across all 720 `4h` candles, the `1d`+`1w` EMA(10,30) trend
+was never simultaneously bullish once in the whole ~120-day window (0/720 bars confirmed) — a real
+market condition (BTC/ETH/SOL all in a weekly downtrend the entire window per the raw EMA check),
+not a bug.
+
+### Why every `4h` entry row shows 0 trades
+
+The `4h` entry timeframe is gated by `1d` and, above that, `1w` — a genuinely slow-moving trend
+filter (EMA(30) on weekly bars smooths over ~30 weeks / ~7 months). Across the ~120-day window
+these `4h` backtests cover, the weekly trend for BTC, ETH, and SOL was bearish the entire time, so
+no `4h` crossover — no matter how many fired — could ever pass confirmation. This is the filter
+doing exactly what a trend filter is supposed to do (refuse to buy dips inside a broader
+downtrend); whether that's the right tradeoff depends on whether you'd rather sit out a downtrend
+entirely or catch the bounces within it. It is not evidence of a bug, and it is not evidence the
+`4h` config is "safe" — it's evidence this particular ~120-day window was a sustained downtrend.
+
+### Key takeaways
+
+1. **Discard the previous (wrong-direction) section's conclusions entirely** — they were measuring
+   a different, backwards mechanism. Nothing about "which timeframes had enough data" carries over;
+   the coverage-cap problem that section's takeaways centered on doesn't exist in the corrected
+   direction.
+2. **Excluding the zero-trade rows, MTF confirmation beat buy-and-hold in 9 of 15 real (non-trivial)
+   runs** — `ema`: BTC/15m, SOL/15m, SOL/1h, BTC/1d, ETH/1d, SOL/1d (6/9 non-trivial ema rows);
+   `confluence`: BTC/4h, ETH/15m, SOL/1h, ETH/1d, SOL/1d (5/9, though BTC/4h and SOL/1d only had
+   2 closed trades each). Better than a coin flip, but every row is well under the ~20-30 closed
+   trades needed to trust a win rate — treat this as a promising direction, not a validated edge.
+3. **The best-looking single result, `ema` on BTC/USD `1d` (+40.99% vs +6.92% buy-and-hold, 8
+   closed trades, 37.5% win rate)**, is also the row with the most closed trades in this whole
+   sweep — worth a closer look (different symbols, different windows) before reading too much
+   into one number, but it's the one result here that clears the trade-count bar enough to take
+   seriously.
+4. **`4h` entries were unconditionally net-negative for testability this window** — 5 of 6 `4h`
+   rows produced zero trades because of the sustained bearish weekly trend described above, not
+   because of a data limitation. A `4h`-entry/`1w`-trend combination will only ever be useful in a
+   market that's had a bullish weekly trend at some point in the test window — worth re-running
+   this specific combination during a different market regime before drawing any conclusion from
+   it either way.
+5. **As with every sweep in this file, this remains single-window, in-sample, and thin on closed
+   trades** — no result here should move the paper-trading bot's configuration on its own. It's a
+   data point to weigh alongside the earlier sweeps, not a replacement for them.
