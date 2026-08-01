@@ -414,14 +414,15 @@ highest, setup on the middle, precise timing on the one you actually trade:
 
 | Entry (`--timeframe`) | Setup | Trend |
 |---|---|---|
+| `5m` | `15m` | `1h` |
 | `15m` | `1h` | `4h` |
 | `1h` | `4h` | `1d` |
 | `4h` | `1d` | `1w` |
 | `1d` | `1w` | `2w` |
 
 This mapping lives in `MTF_CONFIRMATION_MAP` (`src/bot/strategies/base.py`), keyed by the entry
-timeframe. Every other timeframe (`1w`, `2w`, and the remaining sub-hour ones) has no mapping, so
-it behaves exactly as before — single timeframe, no filtering.
+timeframe. Every other timeframe (`1m`, `30m`, `1w`, `2w`) has no mapping, so it behaves exactly
+as before — single timeframe, no filtering.
 
 Confirmation applies to **entries only** — exits (SELL) are never filtered, consistent with the
 existing principle that an exit should never be harder to trigger than an entry (risk management

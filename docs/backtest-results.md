@@ -456,3 +456,51 @@ entirely or catch the bounces within it. It is not evidence of a bug, and it is 
 5. **As with every sweep in this file, this remains single-window, in-sample, and thin on closed
    trades** — no result here should move the paper-trading bot's configuration on its own. It's a
    data point to weigh alongside the earlier sweeps, not a replacement for them.
+
+---
+
+## 2026-08-01 (continued 3) — SOL/USD scalping timeframes: 5m vs 15m, EMA(10,30) vs EMA(5,10)
+
+**Purpose:** Compare the two fastest entry timeframes against each other on SOL/USD, with both a
+slower and a faster EMA pair, to see whether short-timeframe trading is viable at all here.
+
+**Setup note:** `5m` had no `MTF_CONFIRMATION_MAP` entry before this run, which would have made the
+comparison meaningless — `5m` would have run unfiltered against a `15m` that was MTF-gated. Added
+`5m` → `15m` (setup) + `1h` (trend) first, following the same ladder as the other rows, so both
+timeframes in this comparison are confirmed the same way.
+
+**Commands run:** `scripts/backtest.py --strategy ema --symbol SOL/USD --timeframe {5m,15m} --fast {10,5} --slow {30,10} --limit 720`
+(`--fee-pct`/`--slippage-pct` at CLI defaults).
+
+### Results
+
+| Entry TF | Confirms against | Periods | Return | Buy&Hold | Beat B&H? | Trades | Closed | Win Rate | Fees (% of start) | Max DD |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5m | 15m+1h | EMA(10,30) | -4.79% | -2.97% | no | 10 | 5 | 0.00% | 2.55% | 4.79% |
+| 5m | 15m+1h | EMA(5,10) | -8.04% | -2.97% | no | 22 | 11 | 0.00% | 5.50% | 8.04% |
+| 15m | 1h+4h | EMA(10,30) | -2.41% | -2.74% | yes | 2 | 1 | 0.00% | 0.51% | 3.24% |
+| 15m | 1h+4h | EMA(5,10) | -10.05% | -2.74% | no | 26 | 13 | 7.69% | 6.49% | 10.05% |
+
+### Key takeaways
+
+1. **Every config lost money, and fees explain most of the spread.** Adding fees back gives rough
+   gross returns of -2.2%, -2.5%, -1.9%, -3.6% — all clustered near buy-and-hold's ~-2.9%. The net
+   differences between these four are almost entirely trading costs, not signal quality. (Rough
+   figures: fees compound within the run, so this is an approximation, not an exact gross return.)
+2. **EMA(5,10) is decisively worse than EMA(10,30) on both timeframes**, and the period choice
+   matters more than the timeframe choice. It roughly doubled trade count and roughly doubled
+   losses on each timeframe, paying 5.5-6.5% of the account in fees alone. At these speeds the
+   strategy is mostly paying the exchange.
+3. **Win rates of 0.00%, 0.00%, 0.00%, 7.69% across 30 closed trades combined** is the strongest
+   signal in this table, and it's negative. Not one config produced a meaningfully profitable
+   trade. That's worse than coin-flip-like behavior on trades that each cost ~0.5% round trip.
+4. **The single "win" (15m EMA(10,30), -2.41% vs -2.74%) is noise** — it beat buy-and-hold by
+   0.33pp on exactly one closed trade, mostly by trading so rarely it barely participated.
+5. **These windows are far shorter than anything else in this file.** Kraken's ~720-candle cap
+   means `5m` covers only ~2.5 days and `15m` only ~7.5 days, versus months or years for the
+   coarser timeframes. Nothing here generalizes; treat it as a snapshot of one week at most.
+6. **Practical read: short-timeframe EMA crossover scalping on SOL/USD looks unpromising once
+   realistic fees are modeled.** The faster you trade, the more reliably fees dominate. If
+   short-timeframe trading is worth pursuing, it likely needs either a much lower fee tier, a
+   signal with a materially better win rate, or holding periods long enough that ~0.5% round-trip
+   costs stop being the deciding factor.

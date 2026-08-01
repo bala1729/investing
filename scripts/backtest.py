@@ -14,9 +14,9 @@ arbitrary intervals). Kraken's public OHLC endpoint also caps history at ~720
 candles regardless of --limit — for a longer lookback, use a coarser
 --timeframe (e.g. 1d or 1w), not a bigger --limit.
 
---timeframe 15m, 1h, 4h, and 1d automatically add multi-timeframe entry
-confirmation against two higher timeframes (15m -> 1h+4h, 1h -> 4h+1d,
-4h -> 1d+1w, 1d -> 1w+2w) — the strategy's crossover still triggers on
+--timeframe 5m, 15m, 1h, 4h, and 1d automatically add multi-timeframe entry
+confirmation against two higher timeframes (5m -> 15m+1h, 15m -> 1h+4h,
+1h -> 4h+1d, 4h -> 1d+1w, 1d -> 1w+2w) — the strategy's crossover still triggers on
 --timeframe candles; the higher timeframes only gate whether a BUY goes
 through. See docs/trading-bot-design.md ("Multi-Timeframe Entry Confirmation").
 

@@ -49,9 +49,9 @@ and [CLAUDE_PROJECT_STATUS.md](CLAUDE_PROJECT_STATUS.md) for current implementat
    mean a bad strategy; a good result on one window doesn't mean it generalizes) and the engine's
    current limitations (capped history, no lookahead but still idealized fills, in-sample only).
 
-   Running on `--timeframe 15m`, `1h`, `4h`, or `1d` automatically adds multi-timeframe entry
-   confirmation against two higher timeframes (15m→1h+4h, 1h→4h+1d, 4h→1d+1w, 1d→1w+2w — trend on
-   the highest, setup on the middle; entries only, exits are never filtered). See
+   Running on `--timeframe 5m`, `15m`, `1h`, `4h`, or `1d` automatically adds multi-timeframe entry
+   confirmation against two higher timeframes (5m→15m+1h, 15m→1h+4h, 1h→4h+1d, 4h→1d+1w, 1d→1w+2w
+   — trend on the highest, setup on the middle; entries only, exits are never filtered). See
    [docs/trading-bot-design.md → "Multi-Timeframe Entry Confirmation"](docs/trading-bot-design.md#multi-timeframe-entry-confirmation).
 
 4. **Run the bot autonomously** (paper trading by default, hits live Kraken market data):

@@ -10,6 +10,7 @@ import pandas_ta as ta
 from src.exchange.executor import OrderSide
 
 MTF_CONFIRMATION_MAP: dict[str, tuple[str, str]] = {
+    "5m": ("15m", "1h"),
     "15m": ("1h", "4h"),
     "1h": ("4h", "1d"),
     "4h": ("1d", "1w"),
@@ -19,9 +20,9 @@ MTF_CONFIRMATION_MAP: dict[str, tuple[str, str]] = {
 entry timeframe. Standard top-down multi-timeframe analysis: the strategy's
 own crossover trigger fires on the entry (primary/--timeframe) candles as
 always, but a BUY only goes through if the higher setup and trend timeframes
-independently confirm the same direction. Timeframes with no entry here (1w,
-2w, and the remaining sub-hour ones) get no confirmation filtering -
-single-timeframe behavior, unchanged."""
+independently confirm the same direction. Timeframes with no entry here (1m,
+30m, 1w, 2w) get no confirmation filtering - single-timeframe behavior,
+unchanged."""
 
 
 @dataclass(frozen=True)
