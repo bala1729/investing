@@ -20,6 +20,31 @@ class Signal:
     confidence: float = 1.0
 
 
+def detect_crossover(fast: pd.Series, slow: pd.Series) -> OrderSide | None:
+    """Detect whether `fast` crossed `slow` on the most recently completed bar.
+
+    Compares the last two values of each series (both must already be aligned
+    to the same candles). Returns OrderSide.BUY for a bullish cross (fast
+    moves from at-or-below to above slow), OrderSide.SELL for a bearish cross
+    (the reverse), or None if there's no fresh cross or not enough data yet
+    (e.g. still inside an indicator's NaN warmup period).
+    """
+    if len(fast) < 2 or len(slow) < 2:
+        return None
+
+    prev_fast, prev_slow = fast.iloc[-2], slow.iloc[-2]
+    curr_fast, curr_slow = fast.iloc[-1], slow.iloc[-1]
+
+    if pd.isna(prev_fast) or pd.isna(prev_slow) or pd.isna(curr_fast) or pd.isna(curr_slow):
+        return None
+
+    if prev_fast <= prev_slow and curr_fast > curr_slow:
+        return OrderSide.BUY
+    if prev_fast >= prev_slow and curr_fast < curr_slow:
+        return OrderSide.SELL
+    return None
+
+
 def ohlcv_to_dataframe(ohlcv: list[list[Any]]) -> pd.DataFrame:
     """Convert raw ccxt OHLCV rows into an indexed pandas DataFrame.
 

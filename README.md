@@ -23,7 +23,7 @@ and [CLAUDE_PROJECT_STATUS.md](CLAUDE_PROJECT_STATUS.md) for current implementat
    uv run pytest -v
    ```
 
-   159 tests — config validation, the Kraken client, order executor, database layer, the webhook
+   181 tests — config validation, the Kraken client, order executor, database layer, the webhook
    API, the strategy framework, and the backtesting engine. All currently pass, at ~99.7% coverage.
 
 3. **Backtest a strategy before it ever touches an order** — walk-forward simulation against real
@@ -34,9 +34,11 @@ and [CLAUDE_PROJECT_STATUS.md](CLAUDE_PROJECT_STATUS.md) for current implementat
    ```
 
    Prints starting/ending balance, total return, trade count, win rate, max drawdown, fees paid,
-   and a buy-and-hold baseline for comparison, for the example SMA-crossover strategy. Tune it with
-   `--fast`, `--slow`, `--balance`, `--position-size-pct`, `--fee-pct`, `--slippage-pct`, or point it
-   at a different `--symbol`/`--timeframe`. Signals fill at the *next* candle's open (never the same
+   and a buy-and-hold baseline for comparison. Two example crossover strategies are included —
+   `--strategy sma` (default, simple moving average) or `--strategy ema` (exponential — reacts
+   faster, noisier) — so you can compare them directly on the same data. Tune it with `--fast`,
+   `--slow`, `--balance`, `--position-size-pct`, `--fee-pct`, `--slippage-pct`, or point it at a
+   different `--symbol`/`--timeframe`. Signals fill at the *next* candle's open (never the same
    bar they were generated on), so results aren't inflated by lookahead bias, and fees/slippage are
    modeled by default so returns aren't inflated by ignoring trading costs either.
 

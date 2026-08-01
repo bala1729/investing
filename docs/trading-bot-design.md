@@ -356,6 +356,9 @@ uv run python scripts/backtest.py --symbol BTC/USD --timeframe 1d --limit 720 --
 # Override the fee/slippage assumptions, position sizing, or starting balance
 uv run python scripts/backtest.py --symbol ETH/USD --fee-pct 0.4 --slippage-pct 0.1 \
   --position-size-pct 50 --balance 5000
+
+# Compare the two bundled example strategies (sma is the default; ema reacts faster but noisier)
+uv run python scripts/backtest.py --strategy ema --symbol BTC/USD --timeframe 1d --limit 720
 ```
 
 Run `uv run python scripts/backtest.py --help` for the full flag list.
@@ -365,7 +368,7 @@ Run `uv run python scripts/backtest.py --help` for the full flag list.
 | Field | What it means | What to watch for |
 |---|---|---|
 | **Total return vs Buy & hold** | The single most important comparison. | If the strategy doesn't clear buy-and-hold by a comfortable margin, it isn't adding value over just holding the asset for that period. |
-| **Win rate** | % of closed trades that were profitable. | Trend-following strategies (like the bundled SMA crossover) are often profitable with a **low** win rate — many small losing whipsaws, a few large winning trends. Don't reject a strategy on win rate alone; read it together with total return. |
+| **Win rate** | % of closed trades that were profitable. | Trend-following strategies (like the bundled SMA/EMA crossovers) are often profitable with a **low** win rate — many small losing whipsaws, a few large winning trends. Don't reject a strategy on win rate alone; read it together with total return. |
 | **Max drawdown** | Worst peak-to-trough decline in equity during the run. | A risk/pain proxy, not just a return number — would you actually hold through that decline with real money? Weigh it against total return, not in isolation. |
 | **Trades / closed trades** | How many round trips the strategy made. | Fewer than ~20–30 closed trades means the win rate and return numbers are easily noise, not signal. Prefer a longer lookback or a finer timeframe before trusting a result built on a handful of trades. |
 | **Fees paid** | Total simulated trading fees across all fills. | Compare it against total return. On a real run, fees turned a 16.5% headline return into 6.4% — barely above buy-and-hold. A strategy that only "wins" before fees isn't a strategy, it's an illusion. |

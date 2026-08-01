@@ -7,6 +7,7 @@ Usage:
     uv run python scripts/backtest.py --symbol BTC/USD --timeframe 1h --limit 500
     uv run python scripts/backtest.py --symbol ETH/USD --fast 5 --slow 20 --balance 5000
     uv run python scripts/backtest.py --symbol BTC/USD --timeframe 1d --limit 720 --fee-pct 0.4
+    uv run python scripts/backtest.py --strategy ema --symbol BTC/USD --timeframe 1d --limit 720
 
 Valid --timeframe values: 1m, 5m, 15m, 30m, 1h, 4h, 1d, 1w, 2w (Kraken has no
 arbitrary intervals). Kraken's public OHLC endpoint also caps history at ~720
@@ -22,8 +23,14 @@ from decimal import Decimal
 
 from src.backtest.engine import Backtester, buy_and_hold_return_pct
 from src.bot.strategies.base import ohlcv_to_dataframe
+from src.bot.strategies.examples.ema_crossover import EMACrossoverStrategy
 from src.bot.strategies.examples.moving_average_crossover import MovingAverageCrossoverStrategy
 from src.exchange.kraken import KrakenClient
+
+STRATEGIES = {
+    "sma": MovingAverageCrossoverStrategy,
+    "ema": EMACrossoverStrategy,
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -44,8 +51,15 @@ def parse_args() -> argparse.Namespace:
         "caps the response at ~720 candles regardless of this value — for a longer "
         "lookback, use a coarser --timeframe instead of raising --limit.",
     )
-    parser.add_argument("--fast", type=int, default=10, help="Fast SMA period")
-    parser.add_argument("--slow", type=int, default=30, help="Slow SMA period")
+    parser.add_argument(
+        "--strategy",
+        default="sma",
+        choices=sorted(STRATEGIES),
+        help="Which crossover strategy to backtest: sma (simple moving average, "
+        "smoother/slower to confirm) or ema (exponential, reacts faster but noisier).",
+    )
+    parser.add_argument("--fast", type=int, default=10, help="Fast moving-average period")
+    parser.add_argument("--slow", type=int, default=30, help="Slow moving-average period")
     parser.add_argument(
         "--balance", type=Decimal, default=Decimal("10000"), help="Starting balance"
     )
@@ -81,7 +95,8 @@ async def main() -> None:
         ohlcv = await client.fetch_ohlcv(args.symbol, timeframe=args.timeframe, limit=args.limit)
 
     candles = ohlcv_to_dataframe(ohlcv)
-    strategy = MovingAverageCrossoverStrategy(fast_period=args.fast, slow_period=args.slow)
+    strategy_cls = STRATEGIES[args.strategy]
+    strategy = strategy_cls(fast_period=args.fast, slow_period=args.slow)
     backtester = Backtester(
         strategy,
         args.symbol,
