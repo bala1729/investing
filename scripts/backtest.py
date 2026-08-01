@@ -24,12 +24,14 @@ from decimal import Decimal
 from src.backtest.engine import Backtester, buy_and_hold_return_pct
 from src.bot.strategies.base import ohlcv_to_dataframe
 from src.bot.strategies.examples.ema_crossover import EMACrossoverStrategy
+from src.bot.strategies.examples.heikin_ashi_confluence import HeikinAshiConfluenceStrategy
 from src.bot.strategies.examples.moving_average_crossover import MovingAverageCrossoverStrategy
 from src.exchange.kraken import KrakenClient
 
 STRATEGIES = {
     "sma": MovingAverageCrossoverStrategy,
     "ema": EMACrossoverStrategy,
+    "confluence": HeikinAshiConfluenceStrategy,
 }
 
 
@@ -55,11 +57,25 @@ def parse_args() -> argparse.Namespace:
         "--strategy",
         default="sma",
         choices=sorted(STRATEGIES),
-        help="Which crossover strategy to backtest: sma (simple moving average, "
-        "smoother/slower to confirm) or ema (exponential, reacts faster but noisier).",
+        help="Which strategy to backtest: sma (simple moving average, smoother/slower "
+        "to confirm), ema (exponential, reacts faster but noisier), or confluence "
+        "(EMA crossover on Heikin Ashi candles, confirmed by MACD/RSI/Bollinger Bands "
+        "- MACD/RSI/BB periods use their standard defaults, not configurable here).",
     )
-    parser.add_argument("--fast", type=int, default=10, help="Fast moving-average period")
-    parser.add_argument("--slow", type=int, default=30, help="Slow moving-average period")
+    parser.add_argument(
+        "--fast",
+        type=int,
+        default=None,
+        help="Fast moving-average period. Defaults to each strategy's own default "
+        "(10 for sma/ema, 5 for confluence) if omitted.",
+    )
+    parser.add_argument(
+        "--slow",
+        type=int,
+        default=None,
+        help="Slow moving-average period. Defaults to each strategy's own default "
+        "(30 for sma/ema, 10 for confluence) if omitted.",
+    )
     parser.add_argument(
         "--balance", type=Decimal, default=Decimal("10000"), help="Starting balance"
     )
@@ -96,7 +112,12 @@ async def main() -> None:
 
     candles = ohlcv_to_dataframe(ohlcv)
     strategy_cls = STRATEGIES[args.strategy]
-    strategy = strategy_cls(fast_period=args.fast, slow_period=args.slow)
+    period_kwargs = {}
+    if args.fast is not None:
+        period_kwargs["fast_period"] = args.fast
+    if args.slow is not None:
+        period_kwargs["slow_period"] = args.slow
+    strategy = strategy_cls(**period_kwargs)
     backtester = Backtester(
         strategy,
         args.symbol,

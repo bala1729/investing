@@ -1,4 +1,4 @@
-"""Tests for the strategy framework: base interface and the SMA/EMA crossover examples."""
+"""Tests for the strategy framework: base interface and the example strategies."""
 
 import dataclasses
 
@@ -8,6 +8,10 @@ import pytest
 
 from src.bot.strategies.base import Signal, Strategy, detect_crossover, ohlcv_to_dataframe
 from src.bot.strategies.examples.ema_crossover import EMACrossoverStrategy
+from src.bot.strategies.examples.heikin_ashi_confluence import (
+    HeikinAshiConfluenceStrategy,
+    _confirms_buy,
+)
 from src.bot.strategies.examples.moving_average_crossover import (
     MovingAverageCrossoverStrategy,
 )
@@ -262,3 +266,175 @@ class TestEMACrossoverStrategy:
         assert "EMA" in signal.reason
         assert f"{reference_ema_fast:.2f}" in signal.reason
         assert f"{reference_sma_fast:.2f}" not in signal.reason
+
+
+def make_ohlc_candles(closes: list[float]) -> pd.DataFrame:
+    """Build a flat (no-wick) OHLC candles DataFrame, for strategies that need the
+    full open/high/low/close set (e.g. for a Heikin Ashi transform), not just close.
+    """
+    return pd.DataFrame({"open": closes, "high": closes, "low": closes, "close": closes})
+
+
+class TestConfirmsBuy:
+    """Tests for the pure MACD/RSI/Bollinger-Bands confirmation check.
+
+    Tested directly with scalar inputs rather than via generate_signal(),
+    since these indicators are naturally correlated in real price data (e.g.
+    RSI overbought and price-above-upper-band tend to co-occur) - hand-crafted
+    market data that trips exactly one filter at a time isn't practical to
+    construct, but the pure function is trivial to test in isolation.
+    """
+
+    def test_all_conditions_pass(self) -> None:
+        assert (
+            _confirms_buy(
+                macd_line=1.0,
+                macd_signal=0.5,
+                rsi=50.0,
+                rsi_overbought=70.0,
+                close=100.0,
+                bb_upper=105.0,
+            )
+            is True
+        )
+
+    def test_rejects_when_macd_not_bullish(self) -> None:
+        assert (
+            _confirms_buy(
+                macd_line=0.5,
+                macd_signal=1.0,
+                rsi=50.0,
+                rsi_overbought=70.0,
+                close=100.0,
+                bb_upper=105.0,
+            )
+            is False
+        )
+
+    def test_rejects_when_macd_equal(self) -> None:
+        assert (
+            _confirms_buy(
+                macd_line=1.0,
+                macd_signal=1.0,
+                rsi=50.0,
+                rsi_overbought=70.0,
+                close=100.0,
+                bb_upper=105.0,
+            )
+            is False
+        )
+
+    def test_rejects_when_rsi_overbought(self) -> None:
+        assert (
+            _confirms_buy(
+                macd_line=1.0,
+                macd_signal=0.5,
+                rsi=75.0,
+                rsi_overbought=70.0,
+                close=100.0,
+                bb_upper=105.0,
+            )
+            is False
+        )
+
+    def test_rejects_when_rsi_at_overbought_boundary(self) -> None:
+        assert (
+            _confirms_buy(
+                macd_line=1.0,
+                macd_signal=0.5,
+                rsi=70.0,
+                rsi_overbought=70.0,
+                close=100.0,
+                bb_upper=105.0,
+            )
+            is False
+        )
+
+    def test_rejects_when_price_at_or_above_upper_band(self) -> None:
+        assert (
+            _confirms_buy(
+                macd_line=1.0,
+                macd_signal=0.5,
+                rsi=50.0,
+                rsi_overbought=70.0,
+                close=105.0,
+                bb_upper=105.0,
+            )
+            is False
+        )
+
+
+class TestHeikinAshiConfluenceStrategy:
+    """Tests for the example multi-indicator confluence strategy."""
+
+    def test_rejects_fast_period_not_less_than_slow(self) -> None:
+        with pytest.raises(ValueError, match="fast_period must be less than slow_period"):
+            HeikinAshiConfluenceStrategy(fast_period=10, slow_period=10)
+
+    def test_rejects_macd_fast_not_less_than_macd_slow(self) -> None:
+        with pytest.raises(ValueError, match="macd_fast must be less than macd_slow"):
+            HeikinAshiConfluenceStrategy(macd_fast=26, macd_slow=26)
+
+    def test_rejects_rsi_overbought_out_of_range(self) -> None:
+        with pytest.raises(ValueError, match="rsi_overbought"):
+            HeikinAshiConfluenceStrategy(rsi_overbought=0)
+        with pytest.raises(ValueError, match="rsi_overbought"):
+            HeikinAshiConfluenceStrategy(rsi_overbought=101)
+
+    def test_default_name_encodes_ema_periods(self) -> None:
+        strategy = HeikinAshiConfluenceStrategy(fast_period=5, slow_period=10)
+        assert strategy.name == "ha_confluence_5_10"
+
+    def test_returns_none_when_not_enough_candles(self) -> None:
+        strategy = HeikinAshiConfluenceStrategy()
+        candles = make_ohlc_candles([100.0] * 35)  # one short of the 36-candle minimum
+        assert strategy.generate_signal("BTC/USD", candles) is None
+
+    def test_bullish_crossover_with_full_confirmation_produces_buy(self) -> None:
+        base = [100.0 - i * 0.3 for i in range(40)]
+        jump = [base[-1] + i * 3.0 for i in range(1, 9)]
+        candles = make_ohlc_candles((base + jump)[:42])
+        strategy = HeikinAshiConfluenceStrategy()
+
+        signal = strategy.generate_signal("BTC/USD", candles)
+
+        assert signal is not None
+        assert signal.side == OrderSide.BUY
+        assert signal.strategy == "ha_confluence_5_10"
+        assert "confirmed by" in signal.reason
+
+    def test_bullish_crossover_without_full_confirmation_produces_no_signal(self) -> None:
+        rise = [100.0 + i * 1.5 for i in range(30)]
+        pullback = [rise[-1] - i * 2.5 for i in range(1, 8)]
+        resume = [pullback[-1] + i * 12.0 for i in range(1, 5)]
+        candles = make_ohlc_candles((rise + pullback + resume)[:39])
+        strategy = HeikinAshiConfluenceStrategy()
+
+        # Sanity: the EMA crossover itself does fire here - it's the
+        # confirmation filters (RSI already overbought, price already above
+        # the upper band) that correctly veto it, not a missing crossover.
+        ha = ta.ha(candles["open"], candles["high"], candles["low"], candles["close"])
+        ema_fast = ta.ema(ha["HA_close"], length=5)
+        ema_slow = ta.ema(ha["HA_close"], length=10)
+        assert detect_crossover(ema_fast, ema_slow) == OrderSide.BUY
+
+        assert strategy.generate_signal("BTC/USD", candles) is None
+
+    def test_bearish_crossover_is_unfiltered(self) -> None:
+        rise = [100.0 + i * 1.0 for i in range(40)]
+        decline = [rise[-1] - i * 3.0 for i in range(1, 9)]
+        candles = make_ohlc_candles((rise + decline)[:43])
+        strategy = HeikinAshiConfluenceStrategy()
+
+        signal = strategy.generate_signal("BTC/USD", candles)
+
+        assert signal is not None
+        assert signal.side == OrderSide.SELL
+        assert signal.strategy == "ha_confluence_5_10"
+        assert "crossed below" in signal.reason
+
+    def test_flat_prices_produce_no_signal(self) -> None:
+        strategy = HeikinAshiConfluenceStrategy()
+        candles = make_ohlc_candles([100.0] * 40)
+
+        assert strategy.generate_signal("BTC/USD", candles) is None

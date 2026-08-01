@@ -22,6 +22,7 @@ from loguru import logger
 
 from src.bot.engine import TradingEngine
 from src.bot.strategies.examples.ema_crossover import EMACrossoverStrategy
+from src.bot.strategies.examples.heikin_ashi_confluence import HeikinAshiConfluenceStrategy
 from src.bot.strategies.examples.moving_average_crossover import MovingAverageCrossoverStrategy
 from src.config import get_settings
 from src.database.models import init_database
@@ -32,6 +33,7 @@ from src.risk.manager import RiskManager
 STRATEGIES = {
     "sma": MovingAverageCrossoverStrategy,
     "ema": EMACrossoverStrategy,
+    "confluence": HeikinAshiConfluenceStrategy,
 }
 
 
@@ -48,10 +50,23 @@ def parse_args() -> argparse.Namespace:
         "--strategy",
         default="sma",
         choices=sorted(STRATEGIES),
-        help="Which crossover strategy to run: sma or ema.",
+        help="Which strategy to run: sma, ema, or confluence (EMA crossover on "
+        "Heikin Ashi candles, confirmed by MACD/RSI/Bollinger Bands).",
     )
-    parser.add_argument("--fast", type=int, default=10, help="Fast moving-average period")
-    parser.add_argument("--slow", type=int, default=30, help="Slow moving-average period")
+    parser.add_argument(
+        "--fast",
+        type=int,
+        default=None,
+        help="Fast moving-average period. Defaults to each strategy's own default "
+        "(10 for sma/ema, 5 for confluence) if omitted.",
+    )
+    parser.add_argument(
+        "--slow",
+        type=int,
+        default=None,
+        help="Slow moving-average period. Defaults to each strategy's own default "
+        "(30 for sma/ema, 10 for confluence) if omitted.",
+    )
     parser.add_argument(
         "--limit",
         type=int,
@@ -77,7 +92,12 @@ async def main() -> None:
     logger.warning(f"Starting bot in {mode_banner} trading mode for {args.symbol}")
 
     strategy_cls = STRATEGIES[args.strategy]
-    strategy = strategy_cls(fast_period=args.fast, slow_period=args.slow)
+    period_kwargs = {}
+    if args.fast is not None:
+        period_kwargs["fast_period"] = args.fast
+    if args.slow is not None:
+        period_kwargs["slow_period"] = args.slow
+    strategy = strategy_cls(**period_kwargs)
 
     client = KrakenClient(settings)
     await client.initialize()

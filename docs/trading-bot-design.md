@@ -360,8 +360,10 @@ uv run python scripts/backtest.py --symbol BTC/USD --timeframe 1d --limit 720 --
 uv run python scripts/backtest.py --symbol ETH/USD --fee-pct 0.4 --slippage-pct 0.1 \
   --position-size-pct 50 --balance 5000
 
-# Compare the two bundled example strategies (sma is the default; ema reacts faster but noisier)
+# Compare the bundled example strategies (sma is the default; ema reacts faster but noisier;
+# confluence adds MACD/RSI/Bollinger-Band confirmation on Heikin Ashi candles)
 uv run python scripts/backtest.py --strategy ema --symbol BTC/USD --timeframe 1d --limit 720
+uv run python scripts/backtest.py --strategy confluence --symbol BTC/USD --timeframe 1d --limit 720
 ```
 
 Run `uv run python scripts/backtest.py --help` for the full flag list.
