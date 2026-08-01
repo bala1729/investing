@@ -41,6 +41,8 @@ class RiskManager:
         risk_reward_ratio: Decimal = Decimal("2"),
     ) -> None:
         self._settings = settings or get_settings()
+        if not (0 < self._settings.risk_per_trade_pct <= 100):
+            raise ValueError("risk_per_trade_pct must be between 0 (exclusive) and 100")
         if not (0 < self._settings.max_position_size_pct <= 100):
             raise ValueError("max_position_size_pct must be between 0 (exclusive) and 100")
         if not (0 < self._settings.max_drawdown_pct <= 100):
@@ -53,20 +55,48 @@ class RiskManager:
             raise ValueError("risk_reward_ratio must be positive")
         self._risk_reward_ratio = risk_reward_ratio
 
-    def calculate_position_size(self, balance: Decimal, price: Decimal) -> Decimal:
-        """Size a new position at `max_position_size_pct` of the given balance.
+    def calculate_position_size(
+        self,
+        balance: Decimal,
+        price: Decimal,
+        stop_loss_price: Decimal,
+        equity: Decimal | None = None,
+    ) -> Decimal:
+        """Size a new position from risk-per-trade, capped by `max_position_size_pct`.
+
+        Risk-based: sized so that if the stop-loss is hit, the loss equals
+        `risk_per_trade_pct` of account equity — this keeps risk-per-trade
+        constant regardless of how close or far the stop happens to be,
+        rather than sizing off `max_position_size_pct` alone (which lets the
+        actual dollar risk balloon whenever the stop is wide).
+        `max_position_size_pct` still applies as a secondary cap on capital
+        deployed, so a very tight stop can't imply an oversized position.
 
         Args:
-            balance: Available quote-currency balance.
+            balance: Available quote-currency balance (caps capital deployed).
             price: Entry price.
+            stop_loss_price: Stop-loss price for this entry; must be below price.
+            equity: Total account equity to size risk from. Defaults to
+                `balance` if not given (e.g. no other open positions to add in).
 
         Returns:
             Position size in base-currency units.
         """
         if price <= 0:
             raise ValueError("price must be positive")
+        if not (0 < stop_loss_price < price):
+            raise ValueError("stop_loss_price must be positive and below price")
+
+        equity_base = equity if equity is not None else balance
+        risk_pct = Decimal(str(self._settings.risk_per_trade_pct))
+        risk_amount = equity_base * risk_pct / 100
+        stop_distance = price - stop_loss_price
+        risk_based_size = risk_amount / stop_distance
+
         max_pct = Decimal(str(self._settings.max_position_size_pct))
-        return (balance * max_pct / 100) / price
+        capital_cap_size = (balance * max_pct / 100) / price
+
+        return min(risk_based_size, capital_cap_size)
 
     def calculate_stop_loss_price(self, entry_price: Decimal) -> Decimal:
         """Stop-loss price, `default_stop_loss_pct` below the entry price."""
@@ -136,9 +166,15 @@ class RiskManager:
                 reason=f"Max open positions ({self._settings.max_open_positions}) reached",
             )
 
+        stop_loss_price = self.calculate_stop_loss_price(price)
+        take_profit_price = self.calculate_take_profit_price(price)
+        position_size = self.calculate_position_size(
+            balance, price, stop_loss_price, equity=current_equity
+        )
+
         return RiskDecision(
             approved=True,
-            position_size=self.calculate_position_size(balance, price),
-            stop_loss_price=self.calculate_stop_loss_price(price),
-            take_profit_price=self.calculate_take_profit_price(price),
+            position_size=position_size,
+            stop_loss_price=stop_loss_price,
+            take_profit_price=take_profit_price,
         )

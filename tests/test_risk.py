@@ -11,6 +11,7 @@ from src.risk.manager import RiskManager
 
 
 def make_settings(
+    risk_per_trade_pct: float = 1.0,
     max_position_size_pct: float = 5.0,
     max_drawdown_pct: float = 10.0,
     default_stop_loss_pct: float = 2.0,
@@ -18,6 +19,7 @@ def make_settings(
 ) -> Settings:
     return Settings(
         _env_file=None,
+        risk_per_trade_pct=risk_per_trade_pct,
         max_position_size_pct=max_position_size_pct,
         max_drawdown_pct=max_drawdown_pct,
         default_stop_loss_pct=default_stop_loss_pct,
@@ -26,6 +28,14 @@ def make_settings(
 
 
 class TestRiskManagerValidation:
+    def test_rejects_zero_risk_per_trade_pct(self) -> None:
+        with pytest.raises(ValueError, match="risk_per_trade_pct"):
+            RiskManager(make_settings(risk_per_trade_pct=0))
+
+    def test_rejects_risk_per_trade_pct_over_100(self) -> None:
+        with pytest.raises(ValueError, match="risk_per_trade_pct"):
+            RiskManager(make_settings(risk_per_trade_pct=101))
+
     def test_rejects_zero_max_position_size_pct(self) -> None:
         with pytest.raises(ValueError, match="max_position_size_pct"):
             RiskManager(make_settings(max_position_size_pct=0))
@@ -60,15 +70,71 @@ class TestRiskManagerValidation:
 
 
 class TestCalculatePositionSize:
-    def test_sizes_to_max_position_pct_of_balance(self) -> None:
-        manager = RiskManager(make_settings(max_position_size_pct=5.0))
-        size = manager.calculate_position_size(Decimal("10000"), Decimal("50000"))
+    def test_capital_cap_binds_under_default_settings(self) -> None:
+        # risk_per_trade_pct=1%, default_stop_loss_pct=2%, max_position_size_pct=5%:
+        # risk-based sizing (0.1) is looser than the capital cap (0.01) here, so the
+        # capital cap is the binding, smaller constraint - expected and fine, it's
+        # meant to be a backstop against oversized positions from a tight stop.
+        manager = RiskManager(make_settings())
+        size = manager.calculate_position_size(
+            balance=Decimal("10000"), price=Decimal("50000"), stop_loss_price=Decimal("49000")
+        )
         assert size == Decimal("0.01")
+
+    def test_risk_based_sizing_binds_when_capital_cap_is_loose(self) -> None:
+        manager = RiskManager(
+            make_settings(
+                risk_per_trade_pct=1.0, max_position_size_pct=90.0, default_stop_loss_pct=2.0
+            )
+        )
+        size = manager.calculate_position_size(
+            balance=Decimal("10000"), price=Decimal("50000"), stop_loss_price=Decimal("49000")
+        )
+        # risk_based = (10000 * 1%) / 1000 = 0.1; capital_cap = (10000 * 90%) / 50000 = 0.18
+        assert size == Decimal("0.1")
+
+    def test_equity_drives_risk_amount_independent_of_balance(self) -> None:
+        # Loose capital cap (100%) so the capital cap never binds in this test -
+        # isolates that `equity`, not `balance`, drives the risk-based size.
+        manager = RiskManager(
+            make_settings(
+                risk_per_trade_pct=1.0, max_position_size_pct=100.0, default_stop_loss_pct=2.0
+            )
+        )
+
+        default_equity_size = manager.calculate_position_size(
+            balance=Decimal("1000"), price=Decimal("100"), stop_loss_price=Decimal("98")
+        )
+        assert default_equity_size == Decimal("5")  # equity defaults to balance (1000)
+
+        larger_equity_size = manager.calculate_position_size(
+            balance=Decimal("1000"),
+            price=Decimal("100"),
+            stop_loss_price=Decimal("98"),
+            equity=Decimal("1600"),
+        )
+        assert larger_equity_size == Decimal("8")  # scales with equity, not balance
 
     def test_rejects_non_positive_price(self) -> None:
         manager = RiskManager(make_settings())
         with pytest.raises(ValueError, match="price"):
-            manager.calculate_position_size(Decimal("10000"), Decimal("0"))
+            manager.calculate_position_size(
+                balance=Decimal("10000"), price=Decimal("0"), stop_loss_price=Decimal("0")
+            )
+
+    def test_rejects_stop_loss_price_at_or_above_price(self) -> None:
+        manager = RiskManager(make_settings())
+        with pytest.raises(ValueError, match="stop_loss_price"):
+            manager.calculate_position_size(
+                balance=Decimal("10000"), price=Decimal("100"), stop_loss_price=Decimal("100")
+            )
+
+    def test_rejects_non_positive_stop_loss_price(self) -> None:
+        manager = RiskManager(make_settings())
+        with pytest.raises(ValueError, match="stop_loss_price"):
+            manager.calculate_position_size(
+                balance=Decimal("10000"), price=Decimal("100"), stop_loss_price=Decimal("0")
+            )
 
 
 class TestCalculateStopLossPrice:

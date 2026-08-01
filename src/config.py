@@ -43,8 +43,14 @@ class Settings(BaseSettings):
     )
 
     # Risk Management
+    risk_per_trade_pct: float = Field(
+        default=1.0,
+        description="Percent of account equity to risk per trade (loss if the stop-loss is "
+        "hit). Drives position sizing; max_position_size_pct is a secondary cap on capital "
+        "deployed, not the primary sizing driver.",
+    )
     max_position_size_pct: float = Field(
-        default=5.0, description="Maximum position size as percentage of portfolio"
+        default=5.0, description="Secondary cap: maximum position size as percentage of balance"
     )
     max_drawdown_pct: float = Field(
         default=10.0, description="Maximum allowed drawdown percentage"

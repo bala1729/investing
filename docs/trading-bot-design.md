@@ -343,6 +343,9 @@ a walk-forward replay of the strategy against historical Kraken candles (`src/ba
 It uses only Kraken's public market-data endpoint, so it needs no API credentials and never touches
 the order executor, database, or webhook path.
 
+Past sweeps are logged in [`docs/backtest-results.md`](backtest-results.md) — check it before
+re-running a config someone already tried, and add to it (not over it) when you run a new sweep.
+
 ### Running it
 
 ```bash

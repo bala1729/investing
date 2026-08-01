@@ -29,6 +29,7 @@ class TestSettings:
         assert settings.trading_mode == TradingMode.PAPER
         assert settings.webhook_host == "0.0.0.0"
         assert settings.webhook_port == 8000
+        assert settings.risk_per_trade_pct == 1.0
         assert settings.max_position_size_pct == 5.0
         assert settings.max_drawdown_pct == 10.0
         assert settings.default_stop_loss_pct == 2.0
@@ -56,6 +57,7 @@ class TestSettings:
             "KRAKEN_API_SECRET": "test_secret",
             "TRADING_MODE": "live",
             "WEBHOOK_PORT": "9000",
+            "RISK_PER_TRADE_PCT": "2.0",
             "MAX_POSITION_SIZE_PCT": "10.0",
             "MAX_OPEN_POSITIONS": "3",
         }
@@ -67,6 +69,7 @@ class TestSettings:
         assert settings.kraken_api_secret == "test_secret"
         assert settings.trading_mode == TradingMode.LIVE
         assert settings.webhook_port == 9000
+        assert settings.risk_per_trade_pct == 2.0
         assert settings.max_position_size_pct == 10.0
         assert settings.max_open_positions == 3
 
