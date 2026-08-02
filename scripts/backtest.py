@@ -198,16 +198,34 @@ def _describe(label: str, frame: pd.DataFrame) -> None:
 
 
 def _load_from_csv(
-    args: argparse.Namespace, timeframes: list[str]
+    args: argparse.Namespace, entry_timeframe: str, higher_timeframes: tuple[str, ...]
 ) -> dict[str, pd.DataFrame]:
+    """Load the entry timeframe plus any confirmation timeframes.
+
+    --start bounds the *entry* timeframe only. The confirmation timeframes
+    deliberately keep their earlier history: their indicators need warmup bars
+    from before the window opens, and a coarse timeframe has very few candles
+    inside a short window (a year holds only ~25 of Kraken's 15-day "2w"
+    candles, fewer than an EMA(30) needs). Truncating them there would leave
+    confirmation permanently unsatisfiable and silently produce zero trades.
+    Lookahead is not a concern - Backtester.run() slices every confirmation
+    frame to the current bar's timestamp on each step.
+    """
     data_dir = _resolve_data_dir(args)
     cache_dir = Path(args.cache_dir).expanduser() if args.cache_dir else None
     start = _parse_moment(args.start, "--start")
     end = _parse_moment(args.end, "--end")
-    return {
-        tf: load_candles(data_dir, args.symbol, tf, start=start, end=end, cache_dir=cache_dir)
-        for tf in timeframes
+
+    frames = {
+        entry_timeframe: load_candles(
+            data_dir, args.symbol, entry_timeframe, start=start, end=end, cache_dir=cache_dir
+        )
     }
+    for tf in higher_timeframes:
+        frames[tf] = load_candles(
+            data_dir, args.symbol, tf, start=None, end=end, cache_dir=cache_dir
+        )
+    return frames
 
 
 async def _load_from_rest(
@@ -232,12 +250,12 @@ async def main() -> None:
         )
 
     mtf_timeframes = MTF_CONFIRMATION_MAP.get(args.timeframe)
-    timeframes = [args.timeframe, *(mtf_timeframes or ())]
+    higher_timeframes = mtf_timeframes or ()
 
     if args.data_source == "csv":
-        frames = _load_from_csv(args, timeframes)
+        frames = _load_from_csv(args, args.timeframe, higher_timeframes)
     else:
-        frames = await _load_from_rest(args, timeframes)
+        frames = await _load_from_rest(args, [args.timeframe, *higher_timeframes])
 
     candles = frames[args.timeframe]
     higher_tf_candles: dict[str, pd.DataFrame] | None = None
