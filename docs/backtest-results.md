@@ -669,3 +669,98 @@ further conclusions about whether MTF confirmation helps.
    whether multi-timeframe confirmation helps is premature until that is addressed.
 6. **Sample sizes are finally adequate** — 5 to 2420 closed trades per cell, versus the 1-2 several
    earlier entries rested on. Where this sweep contradicts an earlier entry, believe this one.
+
+---
+
+## 2026-08-02 (continued) — Same 159 runs, with state-based entry
+
+**What changed:** entries now key off "is the trend bullish now" rather than "did it just turn
+bullish" (`bbe79ca`), fixing the flaw documented in the previous section where a crossover vetoed by
+higher-timeframe confirmation was discarded permanently. Identical sweep otherwise, so every row
+below is directly comparable to the one above it.
+
+### The fix works as intended
+
+| | Before | After |
+|---|---|---|
+| Runs making zero trades | 15 | 10 |
+| `ema(10,30)` profitable | 23/57 | **32/57** |
+| `confluence` profitable | 23/57 | **32/57** |
+| `ema(10,30)` beat B&H | 17/57 | 22/57 |
+| `confluence` beat B&H | 21/57 | 23/57 |
+| Full-history rows beating B&H | **0/27** | **10/27** |
+
+The specific case that motivated the change: BTC/USD `1d` in 2023 went from sitting out a +156% year
+to +52.53%; ETH/USD `1d` 2023 went from zero trades to +13.02%.
+
+### But the headline result does not survive scrutiny
+
+Going from 0 to 10 full-history wins looks like vindication. It isn't. **All ten have the same
+yearly record — win the down years, lose the up years:**
+
+| Config | 2022 (B&H −75%) | 2023 (B&H +392%) | 2024 (B&H +83%) | 2025 (B&H −17%) |
+|---|---|---|---|---|
+| ema(10,30) ETH 1h | **W** | L | L | **W** |
+| ema(9,26) ETH 1h | **W** | L | L | **W** |
+| confluence ETH 4h | **W** | L | L | **W** |
+| confluence ETH 1d | **W** | L | **W** | **W** |
+| sma(10,30) SOL 1h | **W** | L | L | **W** |
+| ema(10,30) SOL 1h | **W** | L | L | **W** |
+| ema(9,26) SOL 1h | **W** | L | L | **W** |
+| confluence SOL 1h | **W** | L | L | **W** |
+| ema(10,30) SOL 4h | **W** | L | L | **W** |
+| confluence SOL 1d | **W** | L | L | **W** |
+
+10/10 won 2022. 10/10 lost 2023. 9/10 lost 2024. 10/10 won 2025. A full-history win is therefore
+just what happens when a long window contains crashes: sidestepping a −67% year compounds enough to
+carry the whole record, even while losing to buy-and-hold in every rally.
+
+**Confirmed independently by moving the start date.** `confluence` on ETH/USD `1d`:
+
+| Window start | Strategy | Buy&Hold | |
+|---|---|---|---|
+| 2015-08 (full) | +473706.78% | +98804.33% | beats B&H 4.8x |
+| 2018-01 | +788.42% | +298.60% | beats B&H |
+| **2020-01** | **+374.38%** | **+2206.18%** | **loses by ~6x** |
+
+The +473,706% is an artifact of compounding through 2015-2017, when ETH went from ~$1 to ~$1400 on
+thin Kraken liquidity — the era where the 100%-position-size, fill-at-the-open model is least
+believable. Start in 2020 and the same config loses to buy-and-hold badly.
+
+**The per-year beat-B&H table is byte-identical to the pre-fix sweep** (3/3, 0/3, 0/3, 2/3 for
+almost every strategy). State-based entry improved *absolute* returns by letting positions be taken
+at all; it did not change what these strategies are.
+
+### Entry timeframe, before vs after
+
+Yearly windows (12 runs per cell):
+
+| Strategy | Entry TF | Avg return | was | Beat B&H | Profitable | Closed | Avg maxDD |
+|---|---|---|---|---|---|---|---|
+| ema(10,30) | **15m** | **-56.40%** | -59.35% | 1/12 | 1/12 | 3309 | 68.9% |
+| ema(10,30) | 1h | +34.14% | +20.17% | 5/12 | 7/12 | 662 | 27.9% |
+| ema(10,30) | 4h | +32.69% | +7.15% | 7/12 | 8/12 | 150 | 17.2% |
+| ema(10,30) | 1d | +19.05% | +12.61% | 6/12 | 7/12 | 28 | 19.9% |
+| confluence | **15m** | **-74.72%** | -13.16% | 1/12 | 0/12 | 5606 | 80.2% |
+| confluence | 1h | +28.17% | +3.23% | 6/12 | 7/12 | 1122 | 23.4% |
+| confluence | 4h | +10.53% | +4.77% | 5/12 | 7/12 | 268 | 18.0% |
+| confluence | 1d | **+41.56%** | +7.55% | 7/12 | 9/12 | 50 | 16.3% |
+
+Every timeframe improved except `15m`, which got *worse* for confluence (-13% -> -75%) — state-based
+entry means more participation, and on a timeframe where fees already dominate, more participation
+is more damage. 5,606 closed trades at ~0.5% round-trip is the entire story. **`15m` remains
+unusable: 0/12 profitable for confluence, 1/12 for EMA.**
+
+### Key takeaways
+
+1. **The fix is real and worth keeping** — 5 fewer dead runs, ~40% more profitable runs, and the
+   specific missed-trend failure is gone.
+2. **It did not produce edge.** The down-year/up-year pattern is unchanged, and the new
+   full-history wins are a compounding artifact of including crash years, demonstrated two ways
+   (uniform W-L-L-W yearly records; ETH from 2020 losing to buy-and-hold by ~6x).
+3. **These remain drawdown-avoidance systems, not alpha.** That is a legitimate thing to want — the
+   `1d` configs cut max drawdown to 16-20% against buy-and-hold's much deeper holes — but it should
+   be chosen deliberately, not mistaken for outperformance.
+4. **Faster is still worse.** `15m` lost money in 23 of 24 runs across both strategies.
+5. **Long-window headline returns should not be quoted without a start-date sensitivity check.**
+   One start date moved a result from "beats buy-and-hold 4.8x" to "loses by 6x".
