@@ -13,6 +13,7 @@ from src.bot.strategies.base import (
     first_column_starting_with,
     mtf_trend_confirms_buy,
     ohlcv_to_dataframe,
+    trend_is_bullish,
 )
 from src.bot.strategies.examples.ema_crossover import EMACrossoverStrategy
 from src.bot.strategies.examples.heikin_ashi_confluence import (
@@ -138,6 +139,88 @@ def make_candles(closes: list[float]) -> pd.DataFrame:
     return pd.DataFrame({"close": closes})
 
 
+class TestTrendIsBullish:
+    """Tests for the state-based trend check that entries key off."""
+
+    def test_true_when_fast_is_above_slow(self) -> None:
+        assert trend_is_bullish(pd.Series([1.0, 110.0]), pd.Series([1.0, 100.0])) is True
+
+    def test_false_when_fast_is_below_slow(self) -> None:
+        assert trend_is_bullish(pd.Series([1.0, 90.0]), pd.Series([1.0, 100.0])) is False
+
+    def test_false_on_exactly_equal_values(self) -> None:
+        assert trend_is_bullish(pd.Series([100.0]), pd.Series([100.0])) is False
+
+    def test_false_when_difference_is_only_floating_point_noise(self) -> None:
+        """A rounding artifact must not read as an uptrend.
+
+        pandas_ta computes SMA(3) of a constant 100.0 as 99.99999999999999, so a
+        bare `>` reports a dead-flat market as bullish by 1.4e-14. Guarded
+        because a state check - unlike a crossover, where the same artifact
+        appears on both compared bars and cancels - has nothing to cancel it.
+        """
+        assert trend_is_bullish(pd.Series([100.0]), pd.Series([100.0 - 1.5e-14])) is False
+
+    def test_true_for_a_real_but_small_price_difference(self) -> None:
+        # a hundredth of a percent is far above float noise and must still count
+        assert trend_is_bullish(pd.Series([100.01]), pd.Series([100.0])) is True
+
+    def test_false_during_indicator_warmup(self) -> None:
+        assert trend_is_bullish(pd.Series([float("nan")]), pd.Series([100.0])) is False
+        assert trend_is_bullish(pd.Series([100.0]), pd.Series([float("nan")])) is False
+
+    def test_false_on_empty_series(self) -> None:
+        assert trend_is_bullish(pd.Series([], dtype=float), pd.Series([], dtype=float)) is False
+
+
+class TestStateBasedEntryRecoversMissedTrends:
+    """The behaviour this whole state-based-entry design exists to provide.
+
+    With a cross-only entry, a bullish crossover that happens while a filter is
+    vetoing is discarded permanently - the lines never cross again on the way
+    up, so the entire trend is forfeited. Real case from the sweep: BTC/USD 1d
+    in 2023 produced five BUY crossovers before the weekly trend turned bullish,
+    and the strategy sat out a +156% year.
+    """
+
+    def test_buy_fires_after_confirmation_arrives_late(self) -> None:
+        # Prices rise steadily: the EMA cross happens early in the series, well
+        # before the bar we evaluate.
+        rising = make_candles([100.0 + i * 2.0 for i in range(40)])
+        strategy = EMACrossoverStrategy(fast_period=5, slow_period=10)
+
+        # Sanity: by the final bar the cross is long past, so a cross-only
+        # entry would have nothing left to trigger on.
+        fast = ta.ema(rising["close"], length=5)
+        slow = ta.ema(rising["close"], length=10)
+        assert detect_crossover(fast, slow) is None
+        assert trend_is_bullish(fast, slow) is True
+
+        # Confirmation only becomes available now - the entry must still happen.
+        uptrend = make_candles([90.0 + i * 2.0 for i in range(11)])
+        signal = strategy.generate_signal("BTC/USD", rising, {"4h": uptrend, "1d": uptrend})
+
+        assert signal is not None
+        assert signal.side == OrderSide.BUY
+
+    def test_entry_stays_blocked_while_confirmation_is_absent(self) -> None:
+        rising = make_candles([100.0 + i * 2.0 for i in range(40)])
+        strategy = EMACrossoverStrategy(fast_period=5, slow_period=10)
+        downtrend = make_candles([110.0 - i * 2.0 for i in range(11)])
+
+        assert strategy.generate_signal("BTC/USD", rising, {"4h": downtrend}) is None
+
+    def test_buy_repeats_on_every_bullish_bar(self) -> None:
+        """Callers dedupe; the strategy just reports the current state."""
+        rising = make_candles([100.0 + i * 2.0 for i in range(40)])
+        strategy = EMACrossoverStrategy(fast_period=5, slow_period=10)
+
+        for end in range(30, 40):
+            signal = strategy.generate_signal("BTC/USD", rising.iloc[:end])
+            assert signal is not None
+            assert signal.side == OrderSide.BUY
+
+
 class TestMtfTrendConfirmsBuy:
     """Tests for the shared multi-timeframe entry-confirmation helper."""
 
@@ -235,7 +318,7 @@ class TestMovingAverageCrossoverStrategy:
         assert signal.symbol == "BTC/USD"
         assert signal.side == OrderSide.BUY
         assert signal.strategy == "sma_crossover_2_3"
-        assert "crossed above" in signal.reason
+        assert "is above" in signal.reason
 
     def test_bearish_crossover_produces_sell_signal(self) -> None:
         strategy = MovingAverageCrossoverStrategy(fast_period=2, slow_period=3)
@@ -335,7 +418,7 @@ class TestEMACrossoverStrategy:
         assert signal is not None
         assert signal.side == OrderSide.BUY
         assert signal.strategy == "ema_crossover_5_10"
-        assert "crossed above" in signal.reason
+        assert "is above" in signal.reason
         assert f"{reference_fast.iloc[-1]:.2f}" in signal.reason
         assert f"{reference_slow.iloc[-1]:.2f}" in signal.reason
 
@@ -713,7 +796,7 @@ class TestMACDCrossoverStrategy:
         assert signal is not None
         assert signal.side == OrderSide.BUY
         assert signal.strategy == "macd_crossover_3_6_3"
-        assert "crossed above" in signal.reason
+        assert "is above" in signal.reason
         assert f"{reference_macd.iloc[-1]:.2f}" in signal.reason
 
     def test_bearish_crossover_matches_reference_macd(self) -> None:

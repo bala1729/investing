@@ -1,5 +1,6 @@
 """Base strategy interface and shared candle-data helpers."""
 
+import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any
@@ -59,6 +60,40 @@ def detect_crossover(fast: pd.Series, slow: pd.Series) -> OrderSide | None:
     if prev_fast >= prev_slow and curr_fast < curr_slow:
         return OrderSide.SELL
     return None
+
+
+def trend_is_bullish(fast: pd.Series, slow: pd.Series) -> bool:
+    """Whether `fast` is above `slow` right now - a state, not a fresh cross.
+
+    Entries key off this rather than off detect_crossover() because a crossover
+    is a single-bar event that can be lost. If something blocks the trade on the
+    exact bar the lines cross - higher-timeframe confirmation not yet satisfied,
+    a risk limit, no free balance - a cross-only entry discards the signal
+    permanently and sits out the entire move that follows, since the lines never
+    cross again on the way up. Asking "is the trend bullish now" instead lets the
+    entry happen as soon as whatever was blocking it clears.
+
+    Returns False (not None) during an indicator's NaN warmup, so callers can
+    treat it as a plain "no entry".
+
+    Values within floating-point noise of each other count as *not* bullish.
+    This matters more than it looks: a rounding artifact is enough to make a
+    bare `>` true on flat prices (pandas_ta computes SMA(3) of a constant 100 as
+    99.99999999999999, so a dead-flat market reads as an uptrend by 1.4e-14).
+    detect_crossover() never had this problem because the same artifact appears
+    on both bars it compares, so it cancels; a single-bar state check has
+    nothing to cancel against. The tolerance is far below any real price move,
+    so it only ever suppresses numerical noise.
+    """
+    if len(fast) == 0 or len(slow) == 0:
+        return False
+
+    curr_fast, curr_slow = fast.iloc[-1], slow.iloc[-1]
+    if pd.isna(curr_fast) or pd.isna(curr_slow):
+        return False
+    if math.isclose(curr_fast, curr_slow, rel_tol=1e-9, abs_tol=0.0):
+        return False
+    return bool(curr_fast > curr_slow)
 
 
 def first_column_starting_with(df: pd.DataFrame, prefix: str) -> pd.Series:

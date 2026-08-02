@@ -9,6 +9,7 @@ from src.bot.strategies.base import (
     detect_crossover,
     first_column_starting_with,
     mtf_trend_confirms_buy,
+    trend_is_bullish,
 )
 from src.exchange.executor import OrderSide
 
@@ -37,17 +38,23 @@ def _confirms_buy(
 
 
 class HeikinAshiConfluenceStrategy(Strategy):
-    """Buys on an EMA crossover confirmed by MACD, RSI, and Bollinger Bands - all on
+    """Buys when an EMA uptrend is confirmed by MACD, RSI, and Bollinger Bands - all on
     Heikin Ashi candles rather than raw OHLC, which smooths out some of the
     noise a fast EMA pair would otherwise react to.
 
-    Entry requires confluence - the trigger (EMA crossover) plus three
-    independent filters all agreeing on the same bar:
-      - EMA(fast_period) crosses above EMA(slow_period) (the trigger)
+    Entry requires confluence - a bullish EMA state plus three independent
+    filters all agreeing on the same bar:
+      - EMA(fast_period) is above EMA(slow_period) (the trend)
       - MACD line is above its signal line (momentum confirms the trend)
       - RSI is below the overbought threshold (not already extended)
       - close is below the upper Bollinger Band (not already outside the
         normal volatility range)
+
+    All four are *states* rather than events, so the entry survives a bar on
+    which one of them (or higher-timeframe confirmation) happened not to line
+    up - see trend_is_bullish(). That matters most here, where four conditions
+    must coincide and the odds of them all landing on one particular bar are
+    correspondingly slim.
 
     Exit is intentionally NOT filtered: a bearish EMA crossover alone closes
     the position, since an exit should never be harder to trigger than an
@@ -108,11 +115,8 @@ class HeikinAshiConfluenceStrategy(Strategy):
 
         ema_fast = ta.ema(ha_close, length=self._fast_period)
         ema_slow = ta.ema(ha_close, length=self._slow_period)
-        side = detect_crossover(ema_fast, ema_slow)
-        if side is None:
-            return None
 
-        if side == OrderSide.SELL:
+        if detect_crossover(ema_fast, ema_slow) == OrderSide.SELL:
             return Signal(
                 symbol=symbol,
                 side=OrderSide.SELL,
@@ -122,6 +126,9 @@ class HeikinAshiConfluenceStrategy(Strategy):
                     f"HA EMA({self._slow_period})={ema_slow.iloc[-1]:.2f}"
                 ),
             )
+
+        if not trend_is_bullish(ema_fast, ema_slow):
+            return None
 
         macd_df = ta.macd(
             ha_close, fast=self._macd_fast, slow=self._macd_slow, signal=self._macd_signal

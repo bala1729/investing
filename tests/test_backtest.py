@@ -265,8 +265,17 @@ class TestBacktesterRun:
 
         assert len(result.trades) == 1
 
-    def test_partial_position_size_compounds_avg_entry_price(self) -> None:
-        strategy = ScriptedStrategy({0: buy(), 1: buy("add to position")})
+    def test_repeated_buy_while_holding_does_not_pyramid(self) -> None:
+        """A BUY while already holding is skipped, matching TradingEngine.
+
+        Strategies emit an entry signal on every bar the entry conditions hold,
+        not only on the bar they first become true, so this fires constantly
+        during a trend. Adding to the position each time would model something
+        the live engine would never do (it skips a BUY for a symbol it already
+        holds), and with partial position sizing it would quietly scale into a
+        far larger position than intended.
+        """
+        strategy = ScriptedStrategy({0: buy(), 1: buy("still bullish"), 2: buy("still bullish")})
         candles = make_candles([100, 100, 100, 100])
         backtester = Backtester(
             strategy, "BTC/USD", starting_balance=Decimal("1000"), position_size_pct=Decimal("50")
@@ -274,11 +283,21 @@ class TestBacktesterRun:
 
         result = backtester.run(candles)
 
-        assert len(result.trades) == 2
-        assert result.trades[0].amount == Decimal("5")
-        assert result.trades[1].amount == Decimal("2.5")
+        assert len(result.trades) == 1
+        assert result.trades[0].amount == Decimal("5")  # 50% of 1000 at 100
         # flat prices throughout: no realized or unrealized gain
         assert result.ending_balance == Decimal("1000")
+
+    def test_buy_allowed_again_after_position_is_closed(self) -> None:
+        strategy = ScriptedStrategy({0: buy(), 1: sell(), 2: buy("re-entry")})
+        candles = make_candles([100, 100, 100, 100])
+        backtester = Backtester(
+            strategy, "BTC/USD", starting_balance=Decimal("1000"), position_size_pct=Decimal("50")
+        )
+
+        result = backtester.run(candles)
+
+        assert [t.side for t in result.trades] == [OrderSide.BUY, OrderSide.SELL, OrderSide.BUY]
 
     def test_higher_tf_candles_are_sliced_without_lookahead(self) -> None:
         strategy = RecordingStrategy()

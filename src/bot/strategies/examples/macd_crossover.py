@@ -22,12 +22,17 @@ from src.bot.strategies.base import (
     detect_crossover,
     first_column_starting_with,
     mtf_trend_confirms_buy,
+    trend_is_bullish,
 )
 from src.exchange.executor import OrderSide
 
 
 class MACDCrossoverStrategy(Strategy):
-    """Buys when the MACD line crosses above its signal line, sells on the reverse cross.
+    """Holds while the MACD line is above its signal line, sells when it crosses back below.
+
+    Entry is *state*-based and exit is cross-based, for the reasons described in
+    trend_is_bullish(). A buy is emitted on every bar where MACD sits above its
+    signal line; callers ignore the repeats.
 
     Needs `slow_period + signal_period + 1` candles before it can produce a
     signal: the MACD line itself only becomes defined after `slow_period` bars,
@@ -73,8 +78,19 @@ class MACDCrossoverStrategy(Strategy):
         macd_line = first_column_starting_with(macd_df, "MACD_")
         signal_line = first_column_starting_with(macd_df, "MACDs_")
 
-        side = detect_crossover(macd_line, signal_line)
-        if side is None:
+        if detect_crossover(macd_line, signal_line) == OrderSide.SELL:
+            return Signal(
+                symbol=symbol,
+                side=OrderSide.SELL,
+                strategy=self.name,
+                reason=(
+                    f"MACD({self._fast_period},{self._slow_period})="
+                    f"{macd_line.iloc[-1]:.2f} crossed below its "
+                    f"signal({self._signal_period})={signal_line.iloc[-1]:.2f}"
+                ),
+            )
+
+        if not trend_is_bullish(macd_line, signal_line):
             return None
 
         # Confirmation uses the strategy's own fast/slow EMA periods on the
@@ -82,20 +98,18 @@ class MACDCrossoverStrategy(Strategy):
         # broader trend pointed this way", which a plain EMA relationship answers
         # directly, while a higher-timeframe MACD cross would be a second
         # momentum trigger rather than a trend check.
-        if side == OrderSide.BUY and higher_tf_candles:
-            if not mtf_trend_confirms_buy(
-                higher_tf_candles, self._fast_period, self._slow_period, use_ema=True
-            ):
-                return None
+        if higher_tf_candles and not mtf_trend_confirms_buy(
+            higher_tf_candles, self._fast_period, self._slow_period, use_ema=True
+        ):
+            return None
 
-        direction = "above" if side == OrderSide.BUY else "below"
         return Signal(
             symbol=symbol,
-            side=side,
+            side=OrderSide.BUY,
             strategy=self.name,
             reason=(
                 f"MACD({self._fast_period},{self._slow_period})="
-                f"{macd_line.iloc[-1]:.2f} crossed {direction} its "
+                f"{macd_line.iloc[-1]:.2f} is above its "
                 f"signal({self._signal_period})={signal_line.iloc[-1]:.2f}"
             ),
         )

@@ -104,6 +104,13 @@ class Backtester:
     SELL signal liquidates the entire base position. A BUY with no quote
     balance left, or a SELL with no position open, is ignored.
 
+    One position per symbol, matching TradingEngine: a BUY while already holding
+    is skipped rather than pyramided into. Strategies emit an entry signal on
+    every bar the entry conditions hold (not only on the bar they first become
+    true), so without this the same position would be added to on every bar of a
+    trend - and the backtest would model something the live engine would never
+    do.
+
     `fee_pct` and `slippage_pct` model real-world trading costs, both applied
     per fill (i.e. on both the entry and the exit of a position):
       - fee_pct is taken out of the traded value — on a BUY it reduces how much
@@ -171,7 +178,11 @@ class Backtester:
                 raw_price = Decimal(str(candles.iloc[i]["open"]))
                 timestamp = candles.index[i]
 
-                if pending_signal.side == OrderSide.BUY and quote_balance > 0:
+                if (
+                    pending_signal.side == OrderSide.BUY
+                    and quote_balance > 0
+                    and base_balance == 0
+                ):
                     buy_price = raw_price * (1 + self._slippage_pct / 100)
                     spend = quote_balance * (self._position_size_pct / Decimal("100"))
                     fee_amount = spend * (self._fee_pct / 100)
