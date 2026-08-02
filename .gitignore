@@ -51,6 +51,9 @@ htmlcov/
 logs/
 *.log
 
+# Backtest data (resampled candle cache; source tick CSVs live outside the repo)
+data/
+
 # Database
 *.db
 *.sqlite

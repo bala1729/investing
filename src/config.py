@@ -42,6 +42,14 @@ class Settings(BaseSettings):
         default="sqlite+aiosqlite:///./trading_bot.db", description="Database connection URL"
     )
 
+    # Backtesting data
+    kraken_data_dir: str = Field(
+        default="",
+        description="Directory holding Kraken's downloadable tick-data CSVs, used by "
+        "scripts/backtest.py to build candles locally instead of hitting the REST API "
+        "(which caps at ~720 candles). Empty means no local data is configured.",
+    )
+
     # Risk Management
     risk_per_trade_pct: float = Field(
         default=1.0,

@@ -61,6 +61,17 @@ def detect_crossover(fast: pd.Series, slow: pd.Series) -> OrderSide | None:
     return None
 
 
+def first_column_starting_with(df: pd.DataFrame, prefix: str) -> pd.Series:
+    """Return the first column whose name starts with `prefix`.
+
+    pandas_ta's exact column suffixes vary with the parameters passed (e.g.
+    Bollinger Band columns repeat the std multiplier: "BBU_20_2.0_2.0") -
+    matching by prefix instead of a hardcoded full name avoids depending on
+    that exact, version-sensitive formatting.
+    """
+    return df[next(c for c in df.columns if c.startswith(prefix))]
+
+
 def mtf_trend_confirms_buy(
     higher_tf_candles: dict[str, pd.DataFrame],
     fast_period: int,

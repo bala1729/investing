@@ -3,19 +3,14 @@
 import pandas as pd
 import pandas_ta as ta
 
-from src.bot.strategies.base import Signal, Strategy, detect_crossover, mtf_trend_confirms_buy
+from src.bot.strategies.base import (
+    Signal,
+    Strategy,
+    detect_crossover,
+    first_column_starting_with,
+    mtf_trend_confirms_buy,
+)
 from src.exchange.executor import OrderSide
-
-
-def _first_column_starting_with(df: pd.DataFrame, prefix: str) -> pd.Series:
-    """Return the first column whose name starts with `prefix`.
-
-    pandas_ta's exact column suffixes vary with the parameters passed (e.g.
-    Bollinger Band columns repeat the std multiplier: "BBU_20_2.0_2.0") -
-    matching by prefix instead of a hardcoded full name avoids depending on
-    that exact, version-sensitive formatting.
-    """
-    return df[next(c for c in df.columns if c.startswith(prefix))]
 
 
 def _confirms_buy(
@@ -131,15 +126,15 @@ class HeikinAshiConfluenceStrategy(Strategy):
         macd_df = ta.macd(
             ha_close, fast=self._macd_fast, slow=self._macd_slow, signal=self._macd_signal
         )
-        macd_line = _first_column_starting_with(macd_df, "MACD_")
-        macd_signal_line = _first_column_starting_with(macd_df, "MACDs_")
+        macd_line = first_column_starting_with(macd_df, "MACD_")
+        macd_signal_line = first_column_starting_with(macd_df, "MACDs_")
 
         rsi = ta.rsi(ha_close, length=self._rsi_period)
 
         bbands = ta.bbands(
             ha_close, length=self._bb_period, lower_std=self._bb_std, upper_std=self._bb_std
         )
-        bb_upper = _first_column_starting_with(bbands, "BBU_")
+        bb_upper = first_column_starting_with(bbands, "BBU_")
 
         if not _confirms_buy(
             macd_line=macd_line.iloc[-1],

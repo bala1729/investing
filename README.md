@@ -23,31 +23,39 @@ and [CLAUDE_PROJECT_STATUS.md](CLAUDE_PROJECT_STATUS.md) for current implementat
    uv run pytest -v
    ```
 
-   273 tests — config validation, the Kraken client, order executor, database layer, the webhook
-   API, the strategy framework, the backtesting engine, risk management, and the trading engine.
-   All currently pass, at ~99.8% coverage.
+   311 tests — config validation, the Kraken client, order executor, database layer, the webhook
+   API, the strategy framework, the backtesting engine, historical data loading, risk management,
+   and the trading engine. All currently pass, at ~99.8% coverage.
 
 3. **Backtest a strategy before it ever touches an order** — walk-forward simulation against real
-   historical Kraken candles (no live/paper orders involved, no API credentials needed):
+   historical Kraken data (no live/paper orders involved, no API credentials needed):
 
    ```bash
-   uv run python scripts/backtest.py --symbol BTC/USD --timeframe 1d --limit 720
+   uv run python scripts/backtest.py --symbol BTC/USD --timeframe 1h --start 2024-01-01 --end 2024-12-31
    ```
 
    Prints starting/ending balance, total return, trade count, win rate, max drawdown, fees paid,
-   and a buy-and-hold baseline for comparison. Three example strategies are included —
+   and a buy-and-hold baseline for comparison. Four example strategies are included —
    `--strategy sma` (default, simple moving average), `--strategy ema` (exponential — reacts
-   faster, noisier), or `--strategy confluence` (EMA crossover on Heikin Ashi candles, confirmed
-   by MACD + RSI + Bollinger Bands) — so you can compare them directly on the same data. Tune it
-   with `--fast`, `--slow`, `--balance`, `--position-size-pct`, `--fee-pct`, `--slippage-pct`, or point it at a
-   different `--symbol`/`--timeframe`. Signals fill at the *next* candle's open (never the same
-   bar they were generated on), so results aren't inflated by lookahead bias, and fees/slippage are
-   modeled by default so returns aren't inflated by ignoring trading costs either.
+   faster, noisier), `--strategy macd` (MACD signal-line crossover), or `--strategy confluence`
+   (EMA crossover on Heikin Ashi candles, confirmed by MACD + RSI + Bollinger Bands) — so you can
+   compare them directly on the same data. Tune it with `--fast`, `--slow`, `--signal`,
+   `--balance`, `--position-size-pct`, `--fee-pct`, `--slippage-pct`, or point it at a different
+   `--symbol`/`--timeframe`. Signals fill at the *next* candle's open (never the same bar they were
+   generated on), so results aren't inflated by lookahead bias, and fees/slippage are modeled by
+   default so returns aren't inflated by ignoring trading costs either.
+
+   **Data source:** by default this builds candles from Kraken's downloadable tick archive, which
+   gives full history (BTC from 2013) and makes runs reproducible — the same `--start`/`--end`
+   always yields the same candles. Point `KRAKEN_DATA_DIR` at the downloaded CSVs to use it. Without
+   that download, pass `--data-source rest` to fetch from the public API instead, which needs no
+   setup but is capped at ~720 candles per request and always relative to *now*.
 
    **Read [docs/trading-bot-design.md → "Backtesting Guide"](docs/trading-bot-design.md#backtesting-guide)
    before trusting any result** — it covers how to interpret each metric (a low win rate doesn't
    mean a bad strategy; a good result on one window doesn't mean it generalizes) and the engine's
-   current limitations (capped history, no lookahead but still idealized fills, in-sample only).
+   current limitations (no lookahead but still idealized fills, in-sample unless you test several
+   windows).
 
    Running on `--timeframe 5m`, `15m`, `1h`, `4h`, or `1d` automatically adds multi-timeframe entry
    confirmation against two higher timeframes (5m→15m+1h, 15m→1h+4h, 1h→4h+1d, 4h→1d+1w, 1d→1w+2w

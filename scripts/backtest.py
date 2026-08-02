@@ -1,18 +1,25 @@
 #!/usr/bin/env python3
 """CLI: backtest a strategy against historical Kraken candles.
 
-Uses only Kraken's public market-data endpoint (no API credentials needed).
+Two data sources:
+
+  --data-source csv (default)  Build candles from Kraken's downloadable tick
+      CSVs in --data-dir (KRAKEN_DATA_DIR). Full history, deterministic and
+      reproducible: the same command always covers the same window.
+
+  --data-source rest           Fetch candles from Kraken's public OHLC endpoint.
+      No credentials needed, but capped at ~720 candles per request regardless
+      of --limit, and always relative to *now* - so results shift over time and
+      cannot be reproduced later.
 
 Usage:
-    uv run python scripts/backtest.py --symbol BTC/USD --timeframe 1h --limit 500
-    uv run python scripts/backtest.py --symbol ETH/USD --fast 5 --slow 20 --balance 5000
-    uv run python scripts/backtest.py --symbol BTC/USD --timeframe 1d --limit 720 --fee-pct 0.4
-    uv run python scripts/backtest.py --strategy ema --symbol BTC/USD --timeframe 1d --limit 720
+    uv run python scripts/backtest.py --symbol BTC/USD --timeframe 1h
+    uv run python scripts/backtest.py --symbol BTC/USD --start 2024-01-01 --end 2024-12-31
+    uv run python scripts/backtest.py --strategy macd --symbol ETH/USD --timeframe 4h
+    uv run python scripts/backtest.py --data-source rest --symbol BTC/USD --limit 720
 
 Valid --timeframe values: 1m, 5m, 15m, 30m, 1h, 4h, 1d, 1w, 2w (Kraken has no
-arbitrary intervals). Kraken's public OHLC endpoint also caps history at ~720
-candles regardless of --limit — for a longer lookback, use a coarser
---timeframe (e.g. 1d or 1w), not a bigger --limit.
+arbitrary intervals; note its "2w" is really a 15-day interval).
 
 --timeframe 5m, 15m, 1h, 4h, and 1d automatically add multi-timeframe entry
 confirmation against two higher timeframes (5m -> 15m+1h, 15m -> 1h+4h,
@@ -25,20 +32,26 @@ See docs/trading-bot-design.md ("Backtesting Guide") for how to interpret the re
 
 import argparse
 import asyncio
+from datetime import datetime
 from decimal import Decimal
+from pathlib import Path
 
 import pandas as pd
 
+from src.backtest.data import load_candles
 from src.backtest.engine import Backtester, buy_and_hold_return_pct
 from src.bot.strategies.base import MTF_CONFIRMATION_MAP, ohlcv_to_dataframe
 from src.bot.strategies.examples.ema_crossover import EMACrossoverStrategy
 from src.bot.strategies.examples.heikin_ashi_confluence import HeikinAshiConfluenceStrategy
+from src.bot.strategies.examples.macd_crossover import MACDCrossoverStrategy
 from src.bot.strategies.examples.moving_average_crossover import MovingAverageCrossoverStrategy
+from src.config import get_settings
 from src.exchange.kraken import KrakenClient
 
 STRATEGIES = {
     "sma": MovingAverageCrossoverStrategy,
     "ema": EMACrossoverStrategy,
+    "macd": MACDCrossoverStrategy,
     "confluence": HeikinAshiConfluenceStrategy,
 }
 
@@ -54,35 +67,75 @@ def parse_args() -> argparse.Namespace:
         "to cover more history, pick a coarser one of these, not a bigger --limit.",
     )
     parser.add_argument(
+        "--data-source",
+        default="csv",
+        choices=("csv", "rest"),
+        help="Where candles come from: csv (default) builds them from local Kraken tick "
+        "data for full, reproducible history; rest fetches from the public OHLC endpoint, "
+        "which is capped at ~720 candles and always relative to now.",
+    )
+    parser.add_argument(
+        "--data-dir",
+        default=None,
+        help="Directory of Kraken tick CSVs (--data-source csv). Defaults to "
+        "KRAKEN_DATA_DIR from the environment/.env.",
+    )
+    parser.add_argument(
+        "--cache-dir",
+        default="data/candles",
+        help="Where to cache resampled 1-minute candles so each tick file is only "
+        "read once. Set to an empty string to disable caching.",
+    )
+    parser.add_argument(
+        "--start",
+        default=None,
+        help="Only use candles at or after this UTC date/time, e.g. 2024-01-01 "
+        "(--data-source csv only).",
+    )
+    parser.add_argument(
+        "--end",
+        default=None,
+        help="Only use candles at or before this UTC date/time, e.g. 2024-12-31 "
+        "(--data-source csv only).",
+    )
+    parser.add_argument(
         "--limit",
         type=int,
         default=500,
-        help="Number of historical candles to request. Kraken's public OHLC endpoint "
-        "caps the response at ~720 candles regardless of this value — for a longer "
-        "lookback, use a coarser --timeframe instead of raising --limit.",
+        help="Number of historical candles to request (--data-source rest only). "
+        "Kraken's public OHLC endpoint caps the response at ~720 regardless of this "
+        "value; use --data-source csv with --start/--end for longer windows.",
     )
     parser.add_argument(
         "--strategy",
         default="sma",
         choices=sorted(STRATEGIES),
         help="Which strategy to backtest: sma (simple moving average, smoother/slower "
-        "to confirm), ema (exponential, reacts faster but noisier), or confluence "
-        "(EMA crossover on Heikin Ashi candles, confirmed by MACD/RSI/Bollinger Bands "
-        "- MACD/RSI/BB periods use their standard defaults, not configurable here).",
+        "to confirm), ema (exponential, reacts faster but noisier), macd (MACD "
+        "signal-line crossover - a momentum trigger that tends to fire earlier than "
+        "the underlying EMA cross), or confluence (EMA crossover on Heikin Ashi "
+        "candles, confirmed by MACD/RSI/Bollinger Bands - RSI/BB periods use their "
+        "standard defaults, not configurable here).",
     )
     parser.add_argument(
         "--fast",
         type=int,
         default=None,
         help="Fast moving-average period. Defaults to each strategy's own default "
-        "(10 for sma/ema, 5 for confluence) if omitted.",
+        "(10 for sma/ema, 12 for macd, 5 for confluence) if omitted.",
     )
     parser.add_argument(
         "--slow",
         type=int,
         default=None,
         help="Slow moving-average period. Defaults to each strategy's own default "
-        "(30 for sma/ema, 10 for confluence) if omitted.",
+        "(30 for sma/ema, 26 for macd, 10 for confluence) if omitted.",
+    )
+    parser.add_argument(
+        "--signal",
+        type=int,
+        default=None,
+        help="MACD signal-line period (--strategy macd only). Defaults to 9 if omitted.",
     )
     parser.add_argument(
         "--balance", type=Decimal, default=Decimal("10000"), help="Starting balance"
@@ -112,37 +165,109 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _parse_moment(value: str | None, flag: str) -> datetime | None:
+    if value is None:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise SystemExit(f"{flag} must be an ISO date/time like 2024-01-01: {exc}") from exc
+
+
+def _resolve_data_dir(args: argparse.Namespace) -> Path:
+    configured = args.data_dir or get_settings().kraken_data_dir
+    if not configured:
+        raise SystemExit(
+            "No Kraken tick-data directory configured. Set KRAKEN_DATA_DIR in .env, "
+            "pass --data-dir, or use --data-source rest to fetch from the API instead."
+        )
+    data_dir = Path(configured).expanduser()
+    if not data_dir.is_dir():
+        raise SystemExit(
+            f"Kraken tick-data directory not found: {data_dir}. "
+            f"Fix --data-dir/KRAKEN_DATA_DIR, or use --data-source rest."
+        )
+    return data_dir
+
+
+def _describe(label: str, frame: pd.DataFrame) -> None:
+    if len(frame) > 0:
+        print(f"  {label}: {len(frame)} candles, {frame.index[0]} to {frame.index[-1]}")
+    else:
+        print(f"  {label}: no candles available")
+
+
+def _load_from_csv(
+    args: argparse.Namespace, timeframes: list[str]
+) -> dict[str, pd.DataFrame]:
+    data_dir = _resolve_data_dir(args)
+    cache_dir = Path(args.cache_dir).expanduser() if args.cache_dir else None
+    start = _parse_moment(args.start, "--start")
+    end = _parse_moment(args.end, "--end")
+    return {
+        tf: load_candles(data_dir, args.symbol, tf, start=start, end=end, cache_dir=cache_dir)
+        for tf in timeframes
+    }
+
+
+async def _load_from_rest(
+    args: argparse.Namespace, timeframes: list[str]
+) -> dict[str, pd.DataFrame]:
+    async with KrakenClient() as client:
+        return {
+            tf: ohlcv_to_dataframe(
+                await client.fetch_ohlcv(args.symbol, timeframe=tf, limit=args.limit)
+            )
+            for tf in timeframes
+        }
+
+
 async def main() -> None:
     args = parse_args()
 
-    higher_tf_candles: dict[str, pd.DataFrame] | None = None
+    if args.data_source == "rest" and (args.start or args.end):
+        raise SystemExit(
+            "--start/--end only apply to --data-source csv; the REST endpoint always "
+            "returns the most recent candles."
+        )
+
     mtf_timeframes = MTF_CONFIRMATION_MAP.get(args.timeframe)
+    timeframes = [args.timeframe, *(mtf_timeframes or ())]
 
-    async with KrakenClient() as client:
-        ohlcv = await client.fetch_ohlcv(args.symbol, timeframe=args.timeframe, limit=args.limit)
+    if args.data_source == "csv":
+        frames = _load_from_csv(args, timeframes)
+    else:
+        frames = await _load_from_rest(args, timeframes)
 
-        if mtf_timeframes is not None:
-            higher_tf_candles = {}
-            print(f"Multi-timeframe confirmation: {args.timeframe} -> {', '.join(mtf_timeframes)}")
-            for tf in mtf_timeframes:
-                higher_ohlcv = await client.fetch_ohlcv(args.symbol, timeframe=tf, limit=args.limit)
-                higher_df = ohlcv_to_dataframe(higher_ohlcv)
-                higher_tf_candles[tf] = higher_df
-                if len(higher_df) > 0:
-                    print(
-                        f"  {tf}: {len(higher_df)} candles, "
-                        f"{higher_df.index[0]} to {higher_df.index[-1]}"
-                    )
-                else:
-                    print(f"  {tf}: no candles available")
+    candles = frames[args.timeframe]
+    higher_tf_candles: dict[str, pd.DataFrame] | None = None
+    if mtf_timeframes is not None:
+        higher_tf_candles = {tf: frames[tf] for tf in mtf_timeframes}
 
-    candles = ohlcv_to_dataframe(ohlcv)
+    print(f"Data source:      {args.data_source}")
+    _describe(f"{args.timeframe} (entry)", candles)
+    if mtf_timeframes is not None:
+        print(f"Multi-timeframe confirmation: {args.timeframe} -> {', '.join(mtf_timeframes)}")
+        for tf in mtf_timeframes:
+            _describe(tf, frames[tf])
+
+    if candles.empty:
+        raise SystemExit(
+            f"No {args.timeframe} candles for {args.symbol} in the requested window. "
+            f"Check --start/--end."
+        )
+
     strategy_cls = STRATEGIES[args.strategy]
     period_kwargs = {}
     if args.fast is not None:
         period_kwargs["fast_period"] = args.fast
     if args.slow is not None:
         period_kwargs["slow_period"] = args.slow
+    if args.signal is not None:
+        if args.strategy != "macd":
+            parser_error = f"--signal only applies to --strategy macd, not {args.strategy}"
+            raise SystemExit(parser_error)
+        period_kwargs["signal_period"] = args.signal
     strategy = strategy_cls(**period_kwargs)
     backtester = Backtester(
         strategy,

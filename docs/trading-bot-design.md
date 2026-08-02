@@ -340,30 +340,70 @@ Kraken uses API key + secret for authentication. Keys should be created with min
 
 Before any strategy touches a real (or even paper) order, validate it with `scripts/backtest.py` —
 a walk-forward replay of the strategy against historical Kraken candles (`src/backtest/engine.py`).
-It uses only Kraken's public market-data endpoint, so it needs no API credentials and never touches
-the order executor, database, or webhook path.
+It never touches the order executor, database, or webhook path, and needs no API credentials.
 
 Past sweeps are logged in [`docs/backtest-results.md`](backtest-results.md) — check it before
 re-running a config someone already tried, and add to it (not over it) when you run a new sweep.
 
+### Data sources
+
+| | `--data-source csv` (default) | `--data-source rest` |
+|---|---|---|
+| Source | Kraken's downloadable tick CSVs, resampled locally (`src/backtest/data.py`) | Kraken's public OHLC endpoint |
+| History | Full — BTC from 2013, ETH from 2015, SOL from 2021 | **Capped at ~720 candles** per request |
+| Reproducible | Yes — a given `--start`/`--end` always yields the same candles | **No** — always relative to *now* |
+| Setup | Requires the download + `KRAKEN_DATA_DIR` | None |
+
+The CSV path exists because the ~720-candle cap silently distorted every early sweep in this
+project: `1h` runs covered only ~30 days, and one multi-timeframe sweep produced zero trades on 6 of
+24 rows purely because its short window happened to be a sustained downtrend.
+
+**Setup:** download Kraken's historical data, then point `KRAKEN_DATA_DIR` at the directory of
+`*.csv` files (in `.env`, or pass `--data-dir`). The files are tick-level trades
+(`timestamp,price,volume`, no header), not candles.
+
+**Caching:** the first run per symbol resamples ticks into 1-minute candles (~5s for SOL, ~60s for
+BTC's 129M ticks) and caches them under `data/candles/` (gitignored). Every coarser timeframe
+derives from that cache exactly, so each tick file is read at most once.
+
+**Two things worth knowing about Kraken's intervals** — both verified against its REST candles, and
+both silently wrong if you reach for pandas' defaults:
+
+- **`2w` is a 15-day interval** (21600 minutes), not 14 days. pandas' `2W` offset is 14 days.
+- **Buckets are floored on the epoch grid**, not anchored to the first observation or to midnight —
+  which is why Kraken's weekly candles land on a Thursday (epoch 0 was a Thursday) and its `2w`
+  candles on a Tuesday. All resampling here uses `origin="epoch"`.
+
+Cross-validated against the REST endpoint over 1,113 shared `1d`/`1w`/`2w` candles: highs and lows
+match **exactly** (0.000000 difference). The only discrepancy found was a single Kraken `2w` candle
+reported with `volume=0` and a flat OHLC, where the underlying ticks show real trading — i.e. the
+local data was more accurate than the API's.
+
+**Data cutoff:** the downloaded archive ends 2025-12-31. Results from it are not directly comparable
+to older REST-sourced entries in the results log, which covered windows through mid-2026.
+
 ### Running it
 
 ```bash
-# Quick look, ~30 days of hourly candles (Kraken's public OHLC endpoint caps around 720 candles
-# per request regardless of --limit, so shorter timeframes mean shorter history)
-uv run python scripts/backtest.py --symbol BTC/USD --timeframe 1h --limit 500
+# Full local history (default source), all of it
+uv run python scripts/backtest.py --symbol BTC/USD --timeframe 1h
 
-# Longer, more meaningful lookback — use a coarser timeframe to fit more history in that same cap
-uv run python scripts/backtest.py --symbol BTC/USD --timeframe 1d --limit 720 --fast 10 --slow 30
+# A specific window — this is how you test out-of-sample across several periods
+uv run python scripts/backtest.py --symbol BTC/USD --timeframe 1h --start 2024-01-01 --end 2024-12-31
+
+# Compare the bundled example strategies (sma is the default; ema reacts faster but noisier;
+# macd triggers on the MACD signal-line cross; confluence adds MACD/RSI/Bollinger-Band
+# confirmation on Heikin Ashi candles)
+uv run python scripts/backtest.py --strategy ema --symbol BTC/USD --timeframe 1d
+uv run python scripts/backtest.py --strategy macd --symbol BTC/USD --timeframe 1d
+uv run python scripts/backtest.py --strategy confluence --symbol BTC/USD --timeframe 1d
 
 # Override the fee/slippage assumptions, position sizing, or starting balance
 uv run python scripts/backtest.py --symbol ETH/USD --fee-pct 0.4 --slippage-pct 0.1 \
   --position-size-pct 50 --balance 5000
 
-# Compare the bundled example strategies (sma is the default; ema reacts faster but noisier;
-# confluence adds MACD/RSI/Bollinger-Band confirmation on Heikin Ashi candles)
-uv run python scripts/backtest.py --strategy ema --symbol BTC/USD --timeframe 1d --limit 720
-uv run python scripts/backtest.py --strategy confluence --symbol BTC/USD --timeframe 1d --limit 720
+# No local data downloaded? Fall back to the API (capped at ~720 candles, not reproducible)
+uv run python scripts/backtest.py --data-source rest --symbol BTC/USD --timeframe 1h --limit 720
 ```
 
 Run `uv run python scripts/backtest.py --help` for the full flag list.
@@ -383,11 +423,13 @@ Run `uv run python scripts/backtest.py --help` for the full flag list.
 - **Idealized-but-not-perfect fills.** Signals fill at the *next* bar's open (no lookahead), which
   is realistic in direction but still an approximation — `--slippage-pct` narrows that gap, but pick
   a value that reflects the pair's actual liquidity/spread, not just the CLI default.
-- **Capped history.** Kraken's public OHLC endpoint returns at most ~720 candles per request,
-  regardless of `--limit`. There's currently no way to pull deeper history through this integration.
-- **Single-window, in-sample only.** A good result on one historical window is not evidence the
-  strategy generalizes. Test multiple, non-overlapping periods and more than one asset — if it only
-  "works" on the one window you happened to run, that's overfitting, not edge.
+- **Capped history on `--data-source rest`.** The public OHLC endpoint returns at most ~720 candles
+  per request regardless of `--limit`. Use the default CSV source for anything longer.
+- **In-sample unless you make it otherwise.** A good result on one historical window is not evidence
+  the strategy generalizes. With full local history there's no excuse not to check: run several
+  non-overlapping `--start`/`--end` windows and more than one asset. If it only "works" on the one
+  window you happened to run, that's overfitting, not edge.
+- **No survivorship or delisting handling.** The archive only contains pairs Kraken still lists.
 - **No minimum order size / lot constraints.** Kraken enforces per-pair minimum trade sizes
   (`KrakenClient.get_minimum_order_amount`); the backtester doesn't check against them.
 - **Long-only, single position, spot only.** No shorting, no leverage, no multiple concurrent

@@ -5,12 +5,25 @@ past ones — did a config's numbers hold up, drift, or was a "good" result just
 historical window? See [`docs/trading-bot-design.md` → "Backtesting Guide"](trading-bot-design.md#backtesting-guide)
 for how to interpret the metrics below and the engine's limitations before trusting any of this.
 
-**Important caveat on reproducibility:** Kraken's public OHLC endpoint always returns the most
-recent ~720 candles — there's no way to pin a specific historical window. Re-running the exact
-same command next week will fetch a different (shifted-forward) set of candles and will *not*
-reproduce these exact numbers. Treat each entry here as a dated snapshot, not a fixed regression
-test. Fee/slippage defaults at the time of each run: `--fee-pct 0.26 --slippage-pct 0.05` (CLI
-defaults) unless noted otherwise.
+**Two eras of entries in this file — read the caveat that applies to the one you're looking at.**
+
+**Entries before 2026-08-02 are REST-sourced and irreproducible.** Kraken's public OHLC endpoint
+always returns the most recent ~720 candles, with no way to pin a historical window — re-running
+the same command later fetches a different, shifted-forward set of candles and will *not* reproduce
+those numbers. Worse, the cap silently truncated the windows themselves: `1h` sweeps covered only
+~30 days and `4h` only ~120 days, which is why several of those sweeps produced 1-2 closed trades
+per row, and why one multi-timeframe sweep produced *zero* trades on 6 of 24 rows purely because
+its short window happened to be a sustained downtrend. Treat every pre-2026-08-02 entry as a dated
+snapshot of a short window, not as evidence about a strategy.
+
+**Entries from 2026-08-02 onward are CSV-sourced and reproducible.** They build candles from
+Kraken's downloadable tick archive (`--data-source csv`, the default), so a given `--start`/`--end`
+always yields identical candles and the numbers can be re-derived exactly. Full history is
+available: BTC from 2013, ETH from 2015, SOL from 2021. The archive ends **2025-12-31**, so these
+entries cover different windows than the older ones and are **not** directly comparable to them.
+
+Fee/slippage defaults at the time of each run: `--fee-pct 0.26 --slippage-pct 0.05` (CLI defaults)
+unless noted otherwise.
 
 ---
 
@@ -504,3 +517,98 @@ timeframes in this comparison are confirmed the same way.
    short-timeframe trading is worth pursuing, it likely needs either a much lower fee tier, a
    signal with a materially better win rate, or holding periods long enough that ~0.5% round-trip
    costs stop being the deciding factor.
+
+---
+
+## 2026-08-02 — First full-history sweep (CSV data): 5 strategies x 3 symbols x 5 windows, 1h
+
+**This is the first entry in this file built on reproducible, full-history data.** Everything above
+was measured through Kraken's REST endpoint on windows of ~30-120 days with, in many rows, 1-2
+closed trades. Those sample sizes cannot support the conclusions drawn from them. This sweep uses
+`--data-source csv` over the full tick archive, so windows are as long as the data allows and every
+number below can be re-derived exactly.
+
+**Setup:** `--timeframe 1h` (so multi-timeframe confirmation is active: `1h` -> `4h` setup + `1d`
+trend), fee/slippage at CLI defaults, 75 runs = 5 strategies x 3 symbols x 5 windows. Windows are
+the four calendar years 2022-2025 plus `full` (all available history: BTC from 2013, ETH from 2015,
+SOL from 2021; archive ends 2025-12-31).
+
+### The pending question: MACD vs EMA
+
+| Symbol | Window | EMA(10,30) | EMA(9,26) | MACD(12,26,9) | Buy&Hold |
+|---|---|---|---|---|---|
+| BTC/USD | 2022 | -13.52% | -11.94% | **-40.06%** | -64.08% |
+| BTC/USD | 2023 | -11.35% | -12.04% | **-38.15%** | +156.22% |
+| BTC/USD | 2024 | -8.29% | +0.47% | **-43.75%** | +118.33% |
+| BTC/USD | 2025 | -17.96% | -18.87% | **-38.43%** | -5.56% |
+| BTC/USD | full | +598.75% | +553.31% | **-97.78%** | +71621.39% |
+| ETH/USD | 2022 | -16.62% | -25.70% | **-29.85%** | -67.44% |
+| ETH/USD | 2023 | -36.57% | -43.66% | **-39.27%** | +92.53% |
+| ETH/USD | 2024 | +13.14% | +9.93% | **-24.34%** | +45.63% |
+| ETH/USD | 2025 | +67.46% | +29.26% | **-11.44%** | -11.13% |
+| ETH/USD | full | +7893.50% | +1571.94% | **-73.28%** | +98804.33% |
+| SOL/USD | 2022 | +17.90% | +0.52% | **-1.97%** | -94.13% |
+| SOL/USD | 2023 | +137.63% | +86.62% | **-17.70%** | +928.59% |
+| SOL/USD | 2024 | +14.83% | +15.59% | **-44.91%** | +86.50% |
+| SOL/USD | 2025 | -15.62% | +11.88% | **-37.99%** | -33.95% |
+| SOL/USD | full | +448.30% | +381.94% | **-11.69%** | +209.30% |
+
+**MACD(12,26,9) lost money in all 15 runs — not one positive cell.** Over full history it destroyed
+the account on BTC (-97.78%, max drawdown 99.2%) and ETH (-73.28%, 94.7%). The mechanism is visible
+in the trade counts: MACD closed 2.4-2.7x as many trades as EMA over the same data (BTC 1456 vs
+543, ETH 1180 vs 462, SOL 420 vs 178). Its signal-line crossover fires on momentum turning rather
+than price crossing, which is genuinely earlier, but at ~0.5% round-trip cost that extra sensitivity
+is a pure liability. **The answer to "is MACD better than EMA here" is an unambiguous no.**
+
+EMA(9,26) vs EMA(10,30) is a coin flip: 9/26 won 6 of 15 cells, and the differences are mostly
+inside the noise. The earlier REST-based comparison that hinted 9/26 might edge out 10/30 was
+measured on 1-2 closed trades per row and should be disregarded.
+
+### The bigger finding: these strategies only "win" in down years
+
+Beat-buy-and-hold, aggregated across the three symbols per year:
+
+| Year | Avg buy&hold | sma(10,30) | ema(10,30) | ema(9,26) | macd | confluence |
+|---|---|---|---|---|---|---|
+| 2022 | **-75.22%** | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 |
+| 2023 | **+392.44%** | 0/3 | 0/3 | 0/3 | 0/3 | 0/3 |
+| 2024 | **+83.49%** | 0/3 | 0/3 | 0/3 | 0/3 | 1/3 |
+| 2025 | **-16.88%** | 2/3 | 2/3 | 2/3 | 0/3 | 2/3 |
+
+The correlation is near-perfect and it is not a subtle effect: in the two down years every strategy
+beat buy-and-hold on essentially every symbol, and in the two up years essentially none did. That is
+the signature of **reduced market exposure**, not of predictive skill. A long-only strategy that is
+in cash part of the time will mechanically lose less in a crash and capture less in a rally; you get
+the same shape from flipping a coin about when to hold. Beating buy-and-hold in 2022 is therefore
+not evidence of edge, and any config selected because it "beat buy-and-hold" on a window that
+happened to be a drawdown is selecting for exactly this artifact.
+
+Full-history totals make the same point: **no strategy beat buy-and-hold on BTC or ETH over the full
+window** (the assets rose 71,621% and 98,804%; the best strategy returned 7,893%). The only
+full-history wins were on SOL, whose buy-and-hold was a comparatively modest +209%.
+
+### Overall tallies (75 runs)
+
+| Strategy | Beat buy&hold | Made money at all |
+|---|---|---|
+| sma(10,30) | 6/15 | 7/15 |
+| ema(10,30) | 6/15 | 8/15 |
+| ema(9,26) | 6/15 | 10/15 |
+| confluence | 6/15 | 8/15 |
+| macd(12,26,9) | 3/15 | **0/15** |
+
+### Key takeaways
+
+1. **MACD(12,26,9) is not viable on this timeframe** and should not be paper-traded. 0/15
+   profitable, with near-total drawdowns over long windows.
+2. **"Beats buy-and-hold" has been a misleading metric throughout this project** because it tracks
+   market direction, not skill. Judge configs within a regime, or against a
+   volatility/exposure-matched baseline, not against buy-and-hold on a cherry-picked window.
+3. **Sample sizes are finally adequate.** Rows here carry 15-1456 closed trades versus the 1-2 that
+   several earlier entries rested on. Where this sweep contradicts an earlier entry, this one wins.
+4. **Every earlier conclusion in this file should be treated as unsupported** until re-measured this
+   way. Specifically: the "EMA(10,30) beat buy-and-hold on all three assets on 1d" result was a
+   ~2-year window ending in a drawdown, and the "confluence beat B&H 4/12" and "MTF beat 9/15"
+   results were measured on windows too short to distinguish signal from noise.
+5. **Drawdowns are severe even for the survivors.** Full-history max drawdown was 36-71% for the
+   non-MACD strategies. Any of these would have required sitting through losing most of the account.

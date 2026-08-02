@@ -10,6 +10,7 @@ from src.bot.strategies.base import (
     Signal,
     Strategy,
     detect_crossover,
+    first_column_starting_with,
     mtf_trend_confirms_buy,
     ohlcv_to_dataframe,
 )
@@ -18,6 +19,7 @@ from src.bot.strategies.examples.heikin_ashi_confluence import (
     HeikinAshiConfluenceStrategy,
     _confirms_buy,
 )
+from src.bot.strategies.examples.macd_crossover import MACDCrossoverStrategy
 from src.bot.strategies.examples.moving_average_crossover import (
     MovingAverageCrossoverStrategy,
 )
@@ -641,6 +643,127 @@ class TestHeikinAshiConfluenceStrategy:
         downtrend = make_candles([110.0 - i * 2.0 for i in range(11)])  # would veto a BUY
 
         signal = strategy.generate_signal("BTC/USD", candles, {"1h": downtrend})
+
+        assert signal is not None
+        assert signal.side == OrderSide.SELL
+
+
+class TestFirstColumnStartingWith:
+    """Tests for the shared pandas_ta column-matching helper."""
+
+    def test_returns_first_matching_column(self) -> None:
+        df = pd.DataFrame({"MACD_12_26_9": [1.0], "MACDh_12_26_9": [2.0], "MACDs_12_26_9": [3.0]})
+
+        assert first_column_starting_with(df, "MACDs_").iloc[0] == 3.0
+
+    def test_prefix_matching_is_not_confused_by_similar_names(self) -> None:
+        # "MACD_" must not match "MACDh_"/"MACDs_", which both start with "MACD"
+        df = pd.DataFrame({"MACDh_12_26_9": [2.0], "MACD_12_26_9": [1.0]})
+
+        assert first_column_starting_with(df, "MACD_").iloc[0] == 1.0
+
+    def test_raises_when_no_column_matches(self) -> None:
+        df = pd.DataFrame({"MACD_12_26_9": [1.0]})
+
+        with pytest.raises(StopIteration):
+            first_column_starting_with(df, "BBU_")
+
+
+class TestMACDCrossoverStrategy:
+    """Tests for the standalone MACD signal-line crossover strategy.
+
+    Like the EMA tests, these verify integration with pandas_ta (right
+    indicator, right periods, right min-length gate, right Signal side) by
+    comparing against a MACD computed via the same trusted ta.macd() call
+    inside the test - MACD's nested EMA smoothing makes hand-derived
+    reference numbers impractical.
+    """
+
+    def test_rejects_fast_period_not_less_than_slow(self) -> None:
+        with pytest.raises(ValueError, match="fast_period must be less than slow_period"):
+            MACDCrossoverStrategy(fast_period=26, slow_period=26)
+
+    def test_rejects_non_positive_signal_period(self) -> None:
+        with pytest.raises(ValueError, match="signal_period must be positive"):
+            MACDCrossoverStrategy(signal_period=0)
+
+    def test_default_name_encodes_all_three_periods(self) -> None:
+        assert MACDCrossoverStrategy().name == "macd_crossover_12_26_9"
+        assert MACDCrossoverStrategy(9, 20, 5).name == "macd_crossover_9_20_5"
+
+    def test_returns_none_when_not_enough_candles(self) -> None:
+        strategy = MACDCrossoverStrategy(fast_period=3, slow_period=6, signal_period=3)
+        # needs slow + signal + 1 == 10 candles
+        candles = make_candles([100.0 + i for i in range(9)])
+
+        assert strategy.generate_signal("BTC/USD", candles) is None
+
+    def test_bullish_crossover_matches_reference_macd(self) -> None:
+        closes = [100.0 - i * 2.0 for i in range(20)] + [68.0]
+        candles = make_candles(closes)
+        strategy = MACDCrossoverStrategy(fast_period=3, slow_period=6, signal_period=3)
+
+        macd_df = ta.macd(pd.Series(closes, dtype=float), fast=3, slow=6, signal=3)
+        reference_macd = first_column_starting_with(macd_df, "MACD_")
+        reference_signal = first_column_starting_with(macd_df, "MACDs_")
+        assert detect_crossover(reference_macd, reference_signal) == OrderSide.BUY
+
+        signal = strategy.generate_signal("BTC/USD", candles)
+
+        assert signal is not None
+        assert signal.side == OrderSide.BUY
+        assert signal.strategy == "macd_crossover_3_6_3"
+        assert "crossed above" in signal.reason
+        assert f"{reference_macd.iloc[-1]:.2f}" in signal.reason
+
+    def test_bearish_crossover_matches_reference_macd(self) -> None:
+        closes = [100.0 + i * 2.0 for i in range(20)] + [132.0]
+        candles = make_candles(closes)
+        strategy = MACDCrossoverStrategy(fast_period=3, slow_period=6, signal_period=3)
+
+        macd_df = ta.macd(pd.Series(closes, dtype=float), fast=3, slow=6, signal=3)
+        reference_macd = first_column_starting_with(macd_df, "MACD_")
+        reference_signal = first_column_starting_with(macd_df, "MACDs_")
+        assert detect_crossover(reference_macd, reference_signal) == OrderSide.SELL
+
+        signal = strategy.generate_signal("BTC/USD", candles)
+
+        assert signal is not None
+        assert signal.side == OrderSide.SELL
+        assert "crossed below" in signal.reason
+
+    def test_flat_prices_produce_no_signal(self) -> None:
+        strategy = MACDCrossoverStrategy(fast_period=3, slow_period=6, signal_period=3)
+        candles = make_candles([100.0] * 30)
+
+        assert strategy.generate_signal("BTC/USD", candles) is None
+
+    def test_mtf_confirmation_suppresses_buy_when_higher_tf_not_aligned(self) -> None:
+        closes = [100.0 - i * 2.0 for i in range(20)] + [68.0]
+        candles = make_candles(closes)
+        strategy = MACDCrossoverStrategy(fast_period=3, slow_period=6, signal_period=3)
+        downtrend = make_candles([110.0 - i * 2.0 for i in range(11)])
+
+        assert strategy.generate_signal("BTC/USD", candles, {"4h": downtrend}) is None
+
+    def test_mtf_confirmation_allows_buy_when_higher_tf_aligned(self) -> None:
+        closes = [100.0 - i * 2.0 for i in range(20)] + [68.0]
+        candles = make_candles(closes)
+        strategy = MACDCrossoverStrategy(fast_period=3, slow_period=6, signal_period=3)
+        uptrend = make_candles([90.0 + i * 2.0 for i in range(11)])
+
+        signal = strategy.generate_signal("BTC/USD", candles, {"4h": uptrend, "1d": uptrend})
+
+        assert signal is not None
+        assert signal.side == OrderSide.BUY
+
+    def test_mtf_confirmation_does_not_affect_sell_signal(self) -> None:
+        closes = [100.0 + i * 2.0 for i in range(20)] + [132.0]
+        candles = make_candles(closes)
+        strategy = MACDCrossoverStrategy(fast_period=3, slow_period=6, signal_period=3)
+        downtrend = make_candles([110.0 - i * 2.0 for i in range(11)])  # would veto a BUY
+
+        signal = strategy.generate_signal("BTC/USD", candles, {"4h": downtrend})
 
         assert signal is not None
         assert signal.side == OrderSide.SELL

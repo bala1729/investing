@@ -23,6 +23,7 @@ from loguru import logger
 from src.bot.engine import TradingEngine
 from src.bot.strategies.examples.ema_crossover import EMACrossoverStrategy
 from src.bot.strategies.examples.heikin_ashi_confluence import HeikinAshiConfluenceStrategy
+from src.bot.strategies.examples.macd_crossover import MACDCrossoverStrategy
 from src.bot.strategies.examples.moving_average_crossover import MovingAverageCrossoverStrategy
 from src.config import get_settings
 from src.database.models import init_database
@@ -33,6 +34,7 @@ from src.risk.manager import RiskManager
 STRATEGIES = {
     "sma": MovingAverageCrossoverStrategy,
     "ema": EMACrossoverStrategy,
+    "macd": MACDCrossoverStrategy,
     "confluence": HeikinAshiConfluenceStrategy,
 }
 
@@ -50,22 +52,29 @@ def parse_args() -> argparse.Namespace:
         "--strategy",
         default="sma",
         choices=sorted(STRATEGIES),
-        help="Which strategy to run: sma, ema, or confluence (EMA crossover on "
-        "Heikin Ashi candles, confirmed by MACD/RSI/Bollinger Bands).",
+        help="Which strategy to run: sma, ema, macd (MACD signal-line crossover), or "
+        "confluence (EMA crossover on Heikin Ashi candles, confirmed by "
+        "MACD/RSI/Bollinger Bands).",
     )
     parser.add_argument(
         "--fast",
         type=int,
         default=None,
         help="Fast moving-average period. Defaults to each strategy's own default "
-        "(10 for sma/ema, 5 for confluence) if omitted.",
+        "(10 for sma/ema, 12 for macd, 5 for confluence) if omitted.",
     )
     parser.add_argument(
         "--slow",
         type=int,
         default=None,
         help="Slow moving-average period. Defaults to each strategy's own default "
-        "(30 for sma/ema, 10 for confluence) if omitted.",
+        "(30 for sma/ema, 26 for macd, 10 for confluence) if omitted.",
+    )
+    parser.add_argument(
+        "--signal",
+        type=int,
+        default=None,
+        help="MACD signal-line period (--strategy macd only). Defaults to 9 if omitted.",
     )
     parser.add_argument(
         "--limit",
@@ -97,6 +106,10 @@ async def main() -> None:
         period_kwargs["fast_period"] = args.fast
     if args.slow is not None:
         period_kwargs["slow_period"] = args.slow
+    if args.signal is not None:
+        if args.strategy != "macd":
+            raise SystemExit(f"--signal only applies to --strategy macd, not {args.strategy}")
+        period_kwargs["signal_period"] = args.signal
     strategy = strategy_cls(**period_kwargs)
 
     client = KrakenClient(settings)
