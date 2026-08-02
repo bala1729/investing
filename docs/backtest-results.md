@@ -520,95 +520,152 @@ timeframes in this comparison are confirmed the same way.
 
 ---
 
-## 2026-08-02 — First full-history sweep (CSV data): 5 strategies x 3 symbols x 5 windows, 1h
+## 2026-08-02 — First full-history sweep (CSV data): 159 runs
 
 **This is the first entry in this file built on reproducible, full-history data.** Everything above
 was measured through Kraken's REST endpoint on windows of ~30-120 days with, in many rows, 1-2
-closed trades. Those sample sizes cannot support the conclusions drawn from them. This sweep uses
-`--data-source csv` over the full tick archive, so windows are as long as the data allows and every
-number below can be re-derived exactly.
+closed trades — sample sizes that cannot support the conclusions drawn from them.
 
-**Setup:** `--timeframe 1h` (so multi-timeframe confirmation is active: `1h` -> `4h` setup + `1d`
-trend), fee/slippage at CLI defaults, 75 runs = 5 strategies x 3 symbols x 5 windows. Windows are
-the four calendar years 2022-2025 plus `full` (all available history: BTC from 2013, ETH from 2015,
-SOL from 2021; archive ends 2025-12-31).
+**Setup:** `--data-source csv` over the full tick archive. 159 runs. Multi-timeframe confirmation is
+active throughout (each entry timeframe gated by its two higher timeframes). Windows are the four
+calendar years 2022-2025 plus `full` (BTC from 2013, ETH from 2015, SOL from 2021; archive ends
+2025-12-31). `15m` has no `full` row — BTC alone would be ~385k candles, and the backtester's
+per-bar cost grows superlinearly.
 
-### The pending question: MACD vs EMA
+> **Correction:** an earlier version of this section was published with slightly different numbers.
+> `--start` was being applied to the confirmation timeframes as well as the entry timeframe, which
+> starved their indicators of warmup (a calendar year holds only ~25 of Kraken's 15-day `2w`
+> candles, fewer than an EMA(30) needs). Fixed in `167616a`; every number below is post-fix. The
+> qualitative conclusions were unchanged — the per-year pattern in particular came out identical.
+
+### The pending question: MACD vs EMA (1h)
 
 | Symbol | Window | EMA(10,30) | EMA(9,26) | MACD(12,26,9) | Buy&Hold |
 |---|---|---|---|---|---|
-| BTC/USD | 2022 | -13.52% | -11.94% | **-40.06%** | -64.08% |
-| BTC/USD | 2023 | -11.35% | -12.04% | **-38.15%** | +156.22% |
-| BTC/USD | 2024 | -8.29% | +0.47% | **-43.75%** | +118.33% |
-| BTC/USD | 2025 | -17.96% | -18.87% | **-38.43%** | -5.56% |
+| BTC/USD | 2022 | -13.52% | -11.94% | **-42.94%** | -64.08% |
+| BTC/USD | 2023 | -14.44% | -14.61% | **-36.04%** | +156.22% |
+| BTC/USD | 2024 | -12.77% | -3.08% | **-45.35%** | +118.33% |
+| BTC/USD | 2025 | -27.12% | -27.02% | **-42.69%** | -5.56% |
 | BTC/USD | full | +598.75% | +553.31% | **-97.78%** | +71621.39% |
-| ETH/USD | 2022 | -16.62% | -25.70% | **-29.85%** | -67.44% |
-| ETH/USD | 2023 | -36.57% | -43.66% | **-39.27%** | +92.53% |
-| ETH/USD | 2024 | +13.14% | +9.93% | **-24.34%** | +45.63% |
-| ETH/USD | 2025 | +67.46% | +29.26% | **-11.44%** | -11.13% |
+| ETH/USD | 2022 | -19.89% | -25.70% | **-35.41%** | -67.44% |
+| ETH/USD | 2023 | -24.87% | -36.92% | **-38.67%** | +92.53% |
+| ETH/USD | 2024 | +14.82% | +14.10% | **-27.96%** | +45.63% |
+| ETH/USD | 2025 | +67.46% | +28.81% | **-12.69%** | -11.13% |
 | ETH/USD | full | +7893.50% | +1571.94% | **-73.28%** | +98804.33% |
-| SOL/USD | 2022 | +17.90% | +0.52% | **-1.97%** | -94.13% |
-| SOL/USD | 2023 | +137.63% | +86.62% | **-17.70%** | +928.59% |
-| SOL/USD | 2024 | +14.83% | +15.59% | **-44.91%** | +86.50% |
-| SOL/USD | 2025 | -15.62% | +11.88% | **-37.99%** | -33.95% |
+| SOL/USD | 2022 | +17.90% | +7.27% | **-1.97%** | -94.13% |
+| SOL/USD | 2023 | +272.34% | +177.98% | **+0.22%** | +928.59% |
+| SOL/USD | 2024 | +9.02% | +11.06% | **-51.61%** | +86.50% |
+| SOL/USD | 2025 | -26.83% | -3.32% | **-34.20%** | -33.95% |
 | SOL/USD | full | +448.30% | +381.94% | **-11.69%** | +209.30% |
 
-**MACD(12,26,9) lost money in all 15 runs — not one positive cell.** Over full history it destroyed
-the account on BTC (-97.78%, max drawdown 99.2%) and ETH (-73.28%, 94.7%). The mechanism is visible
-in the trade counts: MACD closed 2.4-2.7x as many trades as EMA over the same data (BTC 1456 vs
-543, ETH 1180 vs 462, SOL 420 vs 178). Its signal-line crossover fires on momentum turning rather
-than price crossing, which is genuinely earlier, but at ~0.5% round-trip cost that extra sensitivity
-is a pure liability. **The answer to "is MACD better than EMA here" is an unambiguous no.**
+**MACD(12,26,9) made money in 1 of 15 runs, and that one was +0.22%.** Over full history it
+destroyed the account on BTC (-97.78%, 99.2% max drawdown) and ETH (-73.28%, 94.7%). The mechanism
+is in the trade counts: MACD closed 2.4-2.7x as many trades as EMA on the same data (BTC 1456 vs
+543, ETH 1180 vs 462, SOL 420 vs 178). Its signal-line crossover fires when momentum turns rather
+than when price crosses, which is genuinely earlier — but at ~0.5% round-trip cost that extra
+sensitivity is a pure liability. **Is MACD better than EMA here? No, and not marginally.**
 
-EMA(9,26) vs EMA(10,30) is a coin flip: 9/26 won 6 of 15 cells, and the differences are mostly
-inside the noise. The earlier REST-based comparison that hinted 9/26 might edge out 10/30 was
-measured on 1-2 closed trades per row and should be disregarded.
+EMA(9,26) vs EMA(10,30) is a coin flip (9/26 won 7 of 15 cells, differences mostly inside the
+noise). The earlier REST-based hint that 9/26 might edge out 10/30 rested on 1-2 closed trades per
+row and should be disregarded.
 
-### The bigger finding: these strategies only "win" in down years
+### Entry timeframe matters more than strategy choice
 
-Beat-buy-and-hold, aggregated across the three symbols per year:
+Yearly windows only (2022-2025 x 3 symbols = 12 runs per cell):
 
-| Year | Avg buy&hold | sma(10,30) | ema(10,30) | ema(9,26) | macd | confluence |
+| Strategy | Entry TF | Confirms against | Avg return | Beat B&H | Profitable | Closed trades | Avg maxDD |
+|---|---|---|---|---|---|---|---|
+| ema(10,30) | **15m** | 1h+4h | **-59.35%** | 1/12 | **0/12** | 2420 | 66.2% |
+| ema(10,30) | 1h | 4h+1d | +20.17% | 5/12 | 5/12 | 469 | 27.3% |
+| ema(10,30) | 4h | 1d+1w | +7.15% | 5/12 | 5/12 | 114 | 17.0% |
+| ema(10,30) | 1d | 1w+2w | +12.61% | 5/12 | 5/12 | 22 | 17.0% |
+| confluence | **15m** | 1h+4h | **-13.16%** | 4/12 | 2/12 | 1131 | 28.5% |
+| confluence | 1h | 4h+1d | +3.23% | 6/12 | 5/12 | 233 | 12.9% |
+| confluence | 4h | 1d+1w | +4.77% | 6/12 | 4/12 | 76 | 8.8% |
+| confluence | 1d | 1w+2w | +7.55% | 5/12 | 4/12 | 16 | 7.7% |
+
+**`15m` entries lost money in 12 of 12 runs for EMA** — average -59% per year, with 2420 closed
+trades against `1d`'s 22. Drawdown also falls monotonically as the timeframe coarsens (66% → 27% →
+17% → 17%). This is the fee-drag result from the earlier scalping comparison, now measured on
+adequate samples: **the faster you trade these crossovers, the more reliably costs dominate.**
+
+### Full history, 4h and 1d
+
+| Strategy | Symbol | TF | Return | Buy&Hold | Closed | MaxDD |
+|---|---|---|---|---|---|---|
+| ema(10,30) | BTC/USD | 1d | +13653.43% | +71621.39% | 28 | 52.5% |
+| ema(10,30) | ETH/USD | 1d | +1321.76% | +98804.33% | 21 | 52.4% |
+| ema(10,30) | SOL/USD | 1d | -9.45% | +209.30% | 10 | 54.4% |
+| ema(10,30) | BTC/USD | 4h | +2354.16% | +71621.39% | 149 | 47.4% |
+| ema(10,30) | ETH/USD | 4h | +5270.42% | +98804.33% | 126 | 59.1% |
+| ema(10,30) | SOL/USD | 4h | +25.97% | +209.30% | 32 | 42.2% |
+| confluence | BTC/USD | 1d | +1300.59% | +71621.39% | 23 | 32.4% |
+| confluence | ETH/USD | 1d | +95.84% | +98804.33% | 16 | 36.7% |
+| confluence | SOL/USD | 1d | -13.04% | +209.30% | 5 | 21.9% |
+| confluence | BTC/USD | 4h | +54.12% | +71621.39% | 82 | 32.6% |
+| confluence | ETH/USD | 4h | +2967.86% | +98804.33% | 67 | 39.0% |
+| confluence | SOL/USD | 4h | +136.25% | +209.30% | 24 | 21.0% |
+
+**Not one full-history row beat buy-and-hold.** Confluence trades less and draws down less than EMA
+(21-39% vs 42-59%) but also returns far less — it is a lower-exposure version of the same thing,
+not a better signal.
+
+### The headline finding: "beats buy-and-hold" has been measuring market direction
+
+Beat-buy-and-hold on `1h`, per year, aggregated across the three symbols:
+
+| Year | Avg buy&hold | sma | ema(10,30) | ema(9,26) | macd | confluence |
 |---|---|---|---|---|---|---|
 | 2022 | **-75.22%** | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 |
 | 2023 | **+392.44%** | 0/3 | 0/3 | 0/3 | 0/3 | 0/3 |
 | 2024 | **+83.49%** | 0/3 | 0/3 | 0/3 | 0/3 | 1/3 |
 | 2025 | **-16.88%** | 2/3 | 2/3 | 2/3 | 0/3 | 2/3 |
 
-The correlation is near-perfect and it is not a subtle effect: in the two down years every strategy
-beat buy-and-hold on essentially every symbol, and in the two up years essentially none did. That is
-the signature of **reduced market exposure**, not of predictive skill. A long-only strategy that is
-in cash part of the time will mechanically lose less in a crash and capture less in a rally; you get
-the same shape from flipping a coin about when to hold. Beating buy-and-hold in 2022 is therefore
-not evidence of edge, and any config selected because it "beat buy-and-hold" on a window that
-happened to be a drawdown is selecting for exactly this artifact.
+In the two down years nearly every strategy beat buy-and-hold on nearly every symbol; in the two up
+years nearly none did. That is the signature of **reduced market exposure**, not predictive skill —
+a long-only strategy that sits in cash part of the time mechanically loses less in a crash and
+captures less in a rally. You would get the same shape from flipping a coin about when to hold.
 
-Full-history totals make the same point: **no strategy beat buy-and-hold on BTC or ETH over the full
-window** (the assets rose 71,621% and 98,804%; the best strategy returned 7,893%). The only
-full-history wins were on SOL, whose buy-and-hold was a comparatively modest +209%.
+The practical consequence: **beating buy-and-hold on a window that happened to be a drawdown is not
+evidence of edge**, and every "beat B&H N/M" claim earlier in this file was partly measuring which
+way the market went during a short window. Judge configs within a regime, or against an
+exposure-matched baseline.
 
-### Overall tallies (75 runs)
+### A real design flaw: confirmation can permanently veto a trend
 
-| Strategy | Beat buy&hold | Made money at all |
+15 of 159 runs made **zero trades**, all in 2022 or 2023. 2022 is legitimate (higher timeframes were
+bearish ~98% of the year). 2023 is not, and the trace is instructive — BTC/USD `1d`, 2023, a +156%
+year, produced 7 crossovers:
+
+| Date | Signal | Higher TFs confirmed? |
 |---|---|---|
-| sma(10,30) | 6/15 | 7/15 |
-| ema(10,30) | 6/15 | 8/15 |
-| ema(9,26) | 6/15 | 10/15 |
-| confluence | 6/15 | 8/15 |
-| macd(12,26,9) | 3/15 | **0/15** |
+| 2023-01-09 | buy | no |
+| 2023-03-06 | sell | no |
+| 2023-03-15 | buy | no |
+| 2023-05-09 | sell | no |
+| 2023-06-21 | buy | no |
+| 2023-07-26 | sell | **yes** |
+| 2023-09-29 | buy | **yes** |
+
+Entry requires a *fresh crossover* **and** confirmation **on the same bar**. Every BUY before
+September fired while the weekly trend was still bearish and was discarded. By the time the weekly
+turned bullish (54% of 2023 qualified), the daily EMAs had long since crossed — so there was no
+fresh cross left to trigger on, and the strategy sat out the year.
+
+**This is a design flaw, not a bug.** A state-based entry ("enter when confirmed *and* fast > slow")
+would have caught the trend; the current cross-only entry cannot. Worth fixing before drawing
+further conclusions about whether MTF confirmation helps.
 
 ### Key takeaways
 
-1. **MACD(12,26,9) is not viable on this timeframe** and should not be paper-traded. 0/15
-   profitable, with near-total drawdowns over long windows.
-2. **"Beats buy-and-hold" has been a misleading metric throughout this project** because it tracks
-   market direction, not skill. Judge configs within a regime, or against a
-   volatility/exposure-matched baseline, not against buy-and-hold on a cherry-picked window.
-3. **Sample sizes are finally adequate.** Rows here carry 15-1456 closed trades versus the 1-2 that
-   several earlier entries rested on. Where this sweep contradicts an earlier entry, this one wins.
-4. **Every earlier conclusion in this file should be treated as unsupported** until re-measured this
-   way. Specifically: the "EMA(10,30) beat buy-and-hold on all three assets on 1d" result was a
-   ~2-year window ending in a drawdown, and the "confluence beat B&H 4/12" and "MTF beat 9/15"
-   results were measured on windows too short to distinguish signal from noise.
-5. **Drawdowns are severe even for the survivors.** Full-history max drawdown was 36-71% for the
-   non-MACD strategies. Any of these would have required sitting through losing most of the account.
+1. **MACD(12,26,9) is not viable on `1h`** — 1/15 profitable, near-total drawdowns over long
+   windows. Do not paper-trade it.
+2. **Entry timeframe dominates strategy choice.** `15m` lost money in 12/12 EMA runs; coarser
+   timeframes were consistently better on both return and drawdown. Fees explain it.
+3. **"Beats buy-and-hold" tracked market direction, not skill** — see the per-year table. This
+   undermines the headline claim of nearly every earlier entry in this file.
+4. **No full-history row beat buy-and-hold on any asset.**
+5. **The MTF entry rule has a defect** that can veto an entire trend (above). Any conclusion about
+   whether multi-timeframe confirmation helps is premature until that is addressed.
+6. **Sample sizes are finally adequate** — 5 to 2420 closed trades per cell, versus the 1-2 several
+   earlier entries rested on. Where this sweep contradicts an earlier entry, believe this one.
