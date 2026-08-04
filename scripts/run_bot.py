@@ -21,22 +21,12 @@ from contextlib import suppress
 from loguru import logger
 
 from src.bot.engine import TradingEngine
-from src.bot.strategies.examples.ema_crossover import EMACrossoverStrategy
-from src.bot.strategies.examples.heikin_ashi_confluence import HeikinAshiConfluenceStrategy
-from src.bot.strategies.examples.macd_crossover import MACDCrossoverStrategy
-from src.bot.strategies.examples.moving_average_crossover import MovingAverageCrossoverStrategy
+from src.bot.strategies.registry import STRATEGIES, create_strategy
 from src.config import get_settings
 from src.database.models import init_database
 from src.exchange.executor import OrderExecutor
 from src.exchange.kraken import KrakenClient
 from src.risk.manager import RiskManager
-
-STRATEGIES = {
-    "sma": MovingAverageCrossoverStrategy,
-    "ema": EMACrossoverStrategy,
-    "macd": MACDCrossoverStrategy,
-    "confluence": HeikinAshiConfluenceStrategy,
-}
 
 
 def parse_args() -> argparse.Namespace:
@@ -52,9 +42,9 @@ def parse_args() -> argparse.Namespace:
         "--strategy",
         default="sma",
         choices=sorted(STRATEGIES),
-        help="Which strategy to run: sma, ema, macd (MACD signal-line crossover), or "
-        "confluence (EMA crossover on Heikin Ashi candles, confirmed by "
-        "MACD/RSI/Bollinger Bands).",
+        help="Which strategy to run: sma, ema, macd (MACD signal-line crossover), "
+        "rsi (RSI crossing its own SMA), or confluence (EMA crossover on Heikin Ashi "
+        "candles, confirmed by MACD/RSI/Bollinger Bands).",
     )
     parser.add_argument(
         "--fast",
@@ -75,6 +65,19 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=None,
         help="MACD signal-line period (--strategy macd only). Defaults to 9 if omitted.",
+    )
+    parser.add_argument(
+        "--rsi-period",
+        type=int,
+        default=None,
+        help="RSI lookback length (--strategy rsi only). Defaults to 14 if omitted.",
+    )
+    parser.add_argument(
+        "--ma-period",
+        type=int,
+        default=None,
+        help="Length of the SMA drawn over the RSI (--strategy rsi only). Defaults "
+        "to 14 if omitted.",
     )
     parser.add_argument(
         "--limit",
@@ -100,17 +103,17 @@ async def main() -> None:
     mode_banner = "PAPER" if settings.is_paper_trading else "LIVE"
     logger.warning(f"Starting bot in {mode_banner} trading mode for {args.symbol}")
 
-    strategy_cls = STRATEGIES[args.strategy]
-    period_kwargs = {}
-    if args.fast is not None:
-        period_kwargs["fast_period"] = args.fast
-    if args.slow is not None:
-        period_kwargs["slow_period"] = args.slow
-    if args.signal is not None:
-        if args.strategy != "macd":
-            raise SystemExit(f"--signal only applies to --strategy macd, not {args.strategy}")
-        period_kwargs["signal_period"] = args.signal
-    strategy = strategy_cls(**period_kwargs)
+    try:
+        strategy = create_strategy(
+            args.strategy,
+            fast=args.fast,
+            slow=args.slow,
+            signal=args.signal,
+            rsi_period=args.rsi_period,
+            ma_period=args.ma_period,
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
 
     client = KrakenClient(settings)
     await client.initialize()

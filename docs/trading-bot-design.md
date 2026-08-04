@@ -392,10 +392,11 @@ uv run python scripts/backtest.py --symbol BTC/USD --timeframe 1h
 uv run python scripts/backtest.py --symbol BTC/USD --timeframe 1h --start 2024-01-01 --end 2024-12-31
 
 # Compare the bundled example strategies (sma is the default; ema reacts faster but noisier;
-# macd triggers on the MACD signal-line cross; confluence adds MACD/RSI/Bollinger-Band
-# confirmation on Heikin Ashi candles)
+# macd triggers on the MACD signal-line cross; rsi trades RSI against the SMA drawn over it;
+# confluence adds MACD/RSI/Bollinger-Band confirmation on Heikin Ashi candles)
 uv run python scripts/backtest.py --strategy ema --symbol BTC/USD --timeframe 1d
 uv run python scripts/backtest.py --strategy macd --symbol BTC/USD --timeframe 1d
+uv run python scripts/backtest.py --strategy rsi --symbol BTC/USD --timeframe 1h
 uv run python scripts/backtest.py --strategy confluence --symbol BTC/USD --timeframe 1d
 
 # Override the fee/slippage assumptions, position sizing, or starting balance

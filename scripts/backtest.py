@@ -41,19 +41,9 @@ import pandas as pd
 from src.backtest.data import load_candles
 from src.backtest.engine import Backtester, buy_and_hold_return_pct
 from src.bot.strategies.base import MTF_CONFIRMATION_MAP, ohlcv_to_dataframe
-from src.bot.strategies.examples.ema_crossover import EMACrossoverStrategy
-from src.bot.strategies.examples.heikin_ashi_confluence import HeikinAshiConfluenceStrategy
-from src.bot.strategies.examples.macd_crossover import MACDCrossoverStrategy
-from src.bot.strategies.examples.moving_average_crossover import MovingAverageCrossoverStrategy
+from src.bot.strategies.registry import STRATEGIES, create_strategy
 from src.config import get_settings
 from src.exchange.kraken import KrakenClient
-
-STRATEGIES = {
-    "sma": MovingAverageCrossoverStrategy,
-    "ema": EMACrossoverStrategy,
-    "macd": MACDCrossoverStrategy,
-    "confluence": HeikinAshiConfluenceStrategy,
-}
 
 
 def parse_args() -> argparse.Namespace:
@@ -113,7 +103,9 @@ def parse_args() -> argparse.Namespace:
         help="Which strategy to backtest: sma (simple moving average, smoother/slower "
         "to confirm), ema (exponential, reacts faster but noisier), macd (MACD "
         "signal-line crossover - a momentum trigger that tends to fire earlier than "
-        "the underlying EMA cross), or confluence (EMA crossover on Heikin Ashi "
+        "the underlying EMA cross), rsi (RSI crossing the SMA drawn over it - "
+        "threshold-free, so it does not fight a trend the way overbought/oversold "
+        "levels do), or confluence (EMA crossover on Heikin Ashi "
         "candles, confirmed by MACD/RSI/Bollinger Bands - RSI/BB periods use their "
         "standard defaults, not configurable here).",
     )
@@ -136,6 +128,19 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=None,
         help="MACD signal-line period (--strategy macd only). Defaults to 9 if omitted.",
+    )
+    parser.add_argument(
+        "--rsi-period",
+        type=int,
+        default=None,
+        help="RSI lookback length (--strategy rsi only). Defaults to 14 if omitted.",
+    )
+    parser.add_argument(
+        "--ma-period",
+        type=int,
+        default=None,
+        help="Length of the SMA drawn over the RSI (--strategy rsi only). Defaults "
+        "to 14 if omitted.",
     )
     parser.add_argument(
         "--balance", type=Decimal, default=Decimal("10000"), help="Starting balance"
@@ -275,18 +280,17 @@ async def main() -> None:
             f"Check --start/--end."
         )
 
-    strategy_cls = STRATEGIES[args.strategy]
-    period_kwargs = {}
-    if args.fast is not None:
-        period_kwargs["fast_period"] = args.fast
-    if args.slow is not None:
-        period_kwargs["slow_period"] = args.slow
-    if args.signal is not None:
-        if args.strategy != "macd":
-            parser_error = f"--signal only applies to --strategy macd, not {args.strategy}"
-            raise SystemExit(parser_error)
-        period_kwargs["signal_period"] = args.signal
-    strategy = strategy_cls(**period_kwargs)
+    try:
+        strategy = create_strategy(
+            args.strategy,
+            fast=args.fast,
+            slow=args.slow,
+            signal=args.signal,
+            rsi_period=args.rsi_period,
+            ma_period=args.ma_period,
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
     backtester = Backtester(
         strategy,
         args.symbol,

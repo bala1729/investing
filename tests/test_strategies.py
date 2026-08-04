@@ -24,6 +24,11 @@ from src.bot.strategies.examples.macd_crossover import MACDCrossoverStrategy
 from src.bot.strategies.examples.moving_average_crossover import (
     MovingAverageCrossoverStrategy,
 )
+from src.bot.strategies.examples.rsi_crossover import (
+    RSICrossoverStrategy,
+    mtf_rsi_confirms_buy,
+    rsi_and_signal_line,
+)
 from src.exchange.executor import OrderSide
 
 
@@ -850,3 +855,164 @@ class TestMACDCrossoverStrategy:
 
         assert signal is not None
         assert signal.side == OrderSide.SELL
+
+
+def rising_closes() -> list[float]:
+    """A rally with regular pullbacks, so RSI trends up without saturating.
+
+    A perfectly monotonic ramp pins RSI at exactly 100, which makes its SMA 100
+    too - and trend_is_bullish() then (correctly) reports "not bullish" because
+    the two lines are equal. Real price series pull back; these fixtures do too.
+    """
+    closes = [100.0]
+    for i in range(39):
+        closes.append(closes[-1] + (4.0 if i % 3 else -2.0))
+    return closes
+
+
+def falling_closes() -> list[float]:
+    """A decline with regular bounces - the mirror of rising_closes()."""
+    closes = [200.0]
+    for i in range(39):
+        closes.append(closes[-1] - (4.0 if i % 3 else -2.0))
+    return closes
+
+
+def reversal_closes() -> list[float]:
+    """rising_closes() plus the single sharp down bar that crosses RSI below its SMA."""
+    closes = rising_closes()
+    return [*closes, closes[-1] - 9.0]
+
+
+def rsi_lines(closes: list[float], rsi_period: int, ma_period: int) -> tuple[pd.Series, pd.Series]:
+    rsi = ta.rsi(pd.Series(closes, dtype=float), length=rsi_period)
+    return rsi, ta.sma(rsi, length=ma_period)
+
+
+class TestRSICrossoverStrategy:
+    """Tests for the RSI-vs-its-own-SMA strategy.
+
+    Verifies integration with pandas_ta (right indicator, right periods, right
+    min-length gate, right Signal side) rather than re-deriving RSI by hand -
+    the crossover arithmetic itself is already covered by TestDetectCrossover
+    and TestTrendIsBullish.
+    """
+
+    def test_rejects_non_positive_periods(self) -> None:
+        with pytest.raises(ValueError, match="rsi_period must be positive"):
+            RSICrossoverStrategy(rsi_period=0)
+        with pytest.raises(ValueError, match="ma_period must be positive"):
+            RSICrossoverStrategy(ma_period=0)
+
+    def test_name_encodes_both_periods(self) -> None:
+        assert RSICrossoverStrategy().name == "rsi_crossover_14_14"
+        assert RSICrossoverStrategy(rsi_period=7, ma_period=3).name == "rsi_crossover_7_3"
+
+    def test_defaults_match_the_tradingview_rsi_indicator(self) -> None:
+        """RSI Length 14, MA Type SMA, MA Length 14 - the charted configuration."""
+        strategy = RSICrossoverStrategy()
+        assert strategy._rsi_period == 14
+        assert strategy._ma_period == 14
+
+    def test_returns_none_below_minimum_candles(self) -> None:
+        strategy = RSICrossoverStrategy(rsi_period=5, ma_period=3)
+        # needs rsi_period + ma_period + 1 == 9
+        short = make_candles([100.0 + i for i in range(8)])
+        assert strategy.generate_signal("BTC/USD", short) is None
+
+    def test_buys_while_rsi_sits_above_its_moving_average(self) -> None:
+        closes = rising_closes()
+        strategy = RSICrossoverStrategy(rsi_period=5, ma_period=3)
+
+        rsi, sma = rsi_lines(closes, 5, 3)
+        # sanity: bullish state with no fresh cross, so only a state-based
+        # entry can fire here at all
+        assert trend_is_bullish(rsi, sma) is True
+        assert detect_crossover(rsi, sma) is None
+
+        signal = strategy.generate_signal("BTC/USD", make_candles(closes))
+        assert signal is not None
+        assert signal.side == OrderSide.BUY
+        assert "is above" in signal.reason
+        assert signal.strategy == "rsi_crossover_5_3"
+
+    def test_sells_when_rsi_crosses_below_its_moving_average(self) -> None:
+        closes = reversal_closes()
+        strategy = RSICrossoverStrategy(rsi_period=5, ma_period=3)
+
+        rsi, sma = rsi_lines(closes, 5, 3)
+        assert detect_crossover(rsi, sma) == OrderSide.SELL  # sanity
+
+        signal = strategy.generate_signal("BTC/USD", make_candles(closes))
+        assert signal is not None
+        assert signal.side == OrderSide.SELL
+        assert "crossed below" in signal.reason
+
+    def test_no_signal_while_rsi_sits_below_its_moving_average(self) -> None:
+        closes = falling_closes()
+        strategy = RSICrossoverStrategy(rsi_period=5, ma_period=3)
+
+        rsi, sma = rsi_lines(closes, 5, 3)
+        assert trend_is_bullish(rsi, sma) is False
+        assert detect_crossover(rsi, sma) is None  # already below, no fresh cross
+
+        assert strategy.generate_signal("BTC/USD", make_candles(closes)) is None
+
+    def test_higher_timeframe_agreement_allows_the_buy(self) -> None:
+        rising = make_candles(rising_closes())
+        strategy = RSICrossoverStrategy(rsi_period=5, ma_period=3)
+        higher = make_candles(rising_closes())
+
+        signal = strategy.generate_signal("BTC/USD", rising, {"4h": higher, "1d": higher})
+        assert signal is not None
+        assert signal.side == OrderSide.BUY
+
+    def test_higher_timeframe_disagreement_blocks_the_buy(self) -> None:
+        rising = make_candles(rising_closes())
+        strategy = RSICrossoverStrategy(rsi_period=5, ma_period=3)
+        falling = make_candles(falling_closes())
+
+        assert strategy.generate_signal("BTC/USD", rising, {"4h": falling}) is None
+
+    def test_exit_is_never_blocked_by_higher_timeframes(self) -> None:
+        """An exit must never be harder to trigger than an entry."""
+        strategy = RSICrossoverStrategy(rsi_period=5, ma_period=3)
+        falling = make_candles(falling_closes())
+
+        signal = strategy.generate_signal(
+            "BTC/USD", make_candles(reversal_closes()), {"4h": falling}
+        )
+        assert signal is not None
+        assert signal.side == OrderSide.SELL
+
+
+class TestMtfRsiConfirmsBuy:
+    """Tests for the RSI strategy's own higher-timeframe confirmation helper."""
+
+    def test_confirms_when_every_timeframe_has_rsi_above_its_average(self) -> None:
+        rising = make_candles(rising_closes())
+        assert mtf_rsi_confirms_buy({"4h": rising, "1d": rising}, 5, 3) is True
+
+    def test_rejects_when_any_timeframe_has_rsi_below_its_average(self) -> None:
+        rising = make_candles(rising_closes())
+        falling = make_candles(falling_closes())
+        assert mtf_rsi_confirms_buy({"4h": rising, "1d": falling}, 5, 3) is False
+
+    def test_rejects_when_a_timeframe_has_too_few_candles(self) -> None:
+        rising = make_candles(rising_closes())
+        short = make_candles([100.0, 101.0, 102.0])
+        assert mtf_rsi_confirms_buy({"4h": rising, "1d": short}, 5, 3) is False
+
+    def test_empty_dict_is_vacuously_confirmed(self) -> None:
+        assert mtf_rsi_confirms_buy({}, 5, 3) is True
+
+
+class TestRsiAndSignalLine:
+    """The shared construction used by both the entry and the confirmation."""
+
+    def test_matches_pandas_ta_directly(self) -> None:
+        closes = pd.Series([100.0 + (i % 7) * 3 - (i % 5) * 2 for i in range(60)], dtype=float)
+        rsi, sma = rsi_and_signal_line(closes, 14, 14)
+
+        pd.testing.assert_series_equal(rsi, ta.rsi(closes, length=14))
+        pd.testing.assert_series_equal(sma, ta.sma(ta.rsi(closes, length=14), length=14))

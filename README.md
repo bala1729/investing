@@ -35,12 +35,14 @@ and [CLAUDE_PROJECT_STATUS.md](CLAUDE_PROJECT_STATUS.md) for current implementat
    ```
 
    Prints starting/ending balance, total return, trade count, win rate, max drawdown, fees paid,
-   and a buy-and-hold baseline for comparison. Four example strategies are included —
+   and a buy-and-hold baseline for comparison. Five example strategies are included —
    `--strategy sma` (default, simple moving average), `--strategy ema` (exponential — reacts
-   faster, noisier), `--strategy macd` (MACD signal-line crossover), or `--strategy confluence`
+   faster, noisier), `--strategy macd` (MACD signal-line crossover), `--strategy rsi` (RSI
+   crossing the SMA drawn over it — threshold-free, so it doesn't fight a trend the way
+   overbought/oversold levels do), or `--strategy confluence`
    (EMA crossover on Heikin Ashi candles, confirmed by MACD + RSI + Bollinger Bands) — so you can
    compare them directly on the same data. Tune it with `--fast`, `--slow`, `--signal`,
-   `--balance`, `--position-size-pct`, `--fee-pct`, `--slippage-pct`, or point it at a different
+   `--rsi-period`, `--ma-period`, `--balance`, `--position-size-pct`, `--fee-pct`, `--slippage-pct`, or point it at a different
    `--symbol`/`--timeframe`. Signals fill at the *next* candle's open (never the same bar they were
    generated on), so results aren't inflated by lookahead bias, and fees/slippage are modeled by
    default so returns aren't inflated by ignoring trading costs either.
