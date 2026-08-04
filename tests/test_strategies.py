@@ -967,6 +967,28 @@ class TestRSICrossoverStrategy:
         assert signal is not None
         assert signal.side == OrderSide.BUY
 
+    def test_entry_timeframe_is_revalidated_when_the_higher_timeframe_turns(self) -> None:
+        """A bullish higher timeframe never rescues a no-longer-bullish entry timeframe.
+
+        The realistic failure this guards: the 4h screen goes bullish first and
+        the daily is still bearish, so no entry fires. Hours later the daily
+        finally turns - but by then the 4h has rolled over. Nothing is latched
+        between polls, and trend_is_bullish() on the entry candles is checked
+        *before* the higher-timeframe gate, so the stale 4h reading cannot leak
+        through: the strategy re-derives both from the candles it is handed on
+        every single call.
+        """
+        strategy = RSICrossoverStrategy(rsi_period=5, ma_period=3)
+        entry_now_bearish = make_candles(falling_closes())
+        higher_now_bullish = make_candles(rising_closes())
+
+        assert (
+            strategy.generate_signal(
+                "BTC/USD", entry_now_bearish, {"1d": higher_now_bullish}
+            )
+            is None
+        )
+
     def test_higher_timeframe_disagreement_blocks_the_buy(self) -> None:
         rising = make_candles(rising_closes())
         strategy = RSICrossoverStrategy(rsi_period=5, ma_period=3)
