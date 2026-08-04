@@ -764,3 +764,176 @@ unusable: 0/12 profitable for confluence, 1/12 for EMA.**
 4. **Faster is still worse.** `15m` lost money in 23 of 24 runs across both strategies.
 5. **Long-window headline returns should not be quoted without a start-date sensitivity check.**
    One start date moved a result from "beats buy-and-hold 4.8x" to "loses by 6x".
+
+---
+
+## 2026-08-03 — EMA(5,10) vs EMA(10,30) on 1h, and a start-date sensitivity check
+
+**Purpose:** Settle whether the faster EMA pair is worth its extra turnover, on the timeframe both
+paper-trading bots actually run. Then test whether the full-history headline numbers survive a
+later start date — the check that reversed the ETH result in the previous entry.
+
+**How run:** a sweep harness that loads each symbol's cached 1-minute candles once and replays
+every config against them, rather than re-reading the cache per invocation. Same engine, fees and
+slippage as `scripts/backtest.py` (`0.26%` / `0.05%`), `1h` entry with MTF confirmation against
+`4h`+`1d`. Windows bound the entry timeframe only; confirmation timeframes keep their warmup bars
+(see the 2026-08-02 entry on `--start` starving confirmation).
+
+### Per-year and full history
+
+| Symbol | Window | EMA(5,10) | EMA(10,30) | Buy & hold | 5,10 closed | 10,30 closed |
+|---|---|---|---|---|---|---|
+| BTC/USD | 2022 | -1.31% | -24.60% | -64.08% | 109 | 31 |
+| BTC/USD | 2023 | -32.61% | -6.52% | 156.22% | 205 | 77 |
+| BTC/USD | 2024 | -20.04% | 14.14% | 118.33% | 186 | 72 |
+| BTC/USD | 2025 | -45.44% | -20.10% | -5.56% | 149 | 58 |
+| BTC/USD | **full** | 66.25% | 3,350.39% | 71,621.39% | 1976 | 743 |
+| ETH/USD | 2022 | 6.47% | -8.24% | -67.44% | 108 | 30 |
+| ETH/USD | 2023 | -37.26% | -24.41% | 92.53% | 187 | 83 |
+| ETH/USD | 2024 | 37.51% | 27.16% | 45.63% | 138 | 59 |
+| ETH/USD | 2025 | 38.00% | 49.24% | -11.13% | 119 | 44 |
+| ETH/USD | **full** | 9,588.48% | 236,664.53% | 98,804.33% | 1657 | 644 |
+| SOL/USD | 2022 | 16.82% | 28.44% | -94.13% | 85 | 19 |
+| SOL/USD | 2023 | 235.10% | 332.46% | 928.59% | 177 | 73 |
+| SOL/USD | 2024 | -31.53% | 12.08% | 86.50% | 178 | 71 |
+| SOL/USD | 2025 | 10.33% | 30.02% | -33.95% | 119 | 45 |
+| SOL/USD | **full** | 1,013.47% | 1,922.28% | 209.30% | 641 | 246 |
+
+**EMA(10,30) wins 12 of 15 windows.** EMA(5,10) takes only BTC 2022, ETH 2022 and ETH 2024, and
+two of those are the crash year where any fast exit flatters itself.
+
+### The mechanism is fee drag, not signal quality
+
+Win rates are close (BTC full history: 26.9% for the fast pair vs 29.2% for the slow one), but the
+fast pair closes roughly 2.5-3x as many trades to get there:
+
+| Run | Closed trades | Fees paid on a $10,000 start |
+|---|---|---|
+| BTC/USD 2022 ema(5,10) | 109 | $5,953 |
+| BTC/USD 2022 ema(10,30) | 31 | $1,395 |
+| BTC/USD 2024 ema(5,10) | 186 | $8,513 |
+| BTC/USD 2024 ema(10,30) | 72 | $4,007 |
+| ETH/USD 2023 ema(5,10) | 187 | $7,652 |
+| ETH/USD 2023 ema(10,30) | 83 | $3,976 |
+| SOL/USD 2024 ema(5,10) | 178 | $7,366 |
+| SOL/USD 2024 ema(10,30) | 71 | $3,987 |
+
+BTC 2024 on the fast pair burned 85% of starting capital in round-trip costs in a single year. Max
+drawdown is worse too — 85.8% vs 54.0% over BTC's full history. The faster pair is not finding worse
+trades; it is paying roughly triple for comparable ones.
+
+### Start-date sensitivity
+
+Every window below ends 2025-12-31; only the start moves.
+
+| Symbol | From | EMA(5,10) | EMA(10,30) | Buy & hold | 10,30 vs B&H |
+|---|---|---|---|---|---|
+| BTC/USD | 2018+ | -76.98% | 162.99% | 526.29% | loses |
+| BTC/USD | 2020+ | -79.11% | 63.76% | 1,120.65% | loses |
+| BTC/USD | 2022+ | -71.25% | -31.75% | 89.60% | loses |
+| ETH/USD | 2018+ | 63.22% | 772.41% | 298.60% | **beats** |
+| ETH/USD | 2020+ | 37.25% | 528.55% | 2,206.18% | loses |
+| ETH/USD | 2022+ | 26.76% | 35.55% | -19.28% | **beats** |
+| SOL/USD | 2018+ | 1,013.47% | 1,922.28% | 209.30% | **beats** |
+| SOL/USD | 2020+ | 1,013.47% | 1,922.28% | 209.30% | **beats** |
+| SOL/USD | 2022+ | 195.71% | 748.08% | -26.78% | **beats** |
+
+SOL's `2018+` and `2020+` rows are duplicates of its full history (its data begins 2021-06-17), so
+they are not independent evidence.
+
+### Key takeaways
+
+1. **EMA(10,30) beats EMA(5,10) in 21 of 24 windows** (12/15 per-year, 9/9 start-date) and has
+   lower max drawdown in *every* cell without exception.
+2. **EMA(5,10) on BTC loses money over every multi-year window tested** — -76.98%, -79.11%,
+   -71.25%. 1,319 closed trades since 2018 at a ~27% win rate is a fee shredder.
+3. **The ETH full-history headline is again an artifact of the earliest years.** +236,664% from
+   2015 becomes +772% from 2018 and +529% from 2020 — against buy-and-hold's +2,206%, a 4x loss.
+   Third independent confirmation that long-window returns must not be quoted without this check.
+4. **Neither pair beats buy-and-hold on BTC in any window.** Across all start dates EMA(10,30)
+   beats B&H 5 of 9 times, but strip SOL's two duplicate rows and it is 3 of 7, with BTC 0 for 3.
+   Wins cluster where buy-and-hold did badly; losses where it did well. Same signature as always.
+
+---
+
+## 2026-08-03 (continued) — New RSI strategy across 1h, 4h and 1d vs EMA(10,30)
+
+**Purpose:** Evaluate the newly added `RSICrossoverStrategy` (commit `56c0445`), which trades RSI
+against a simple moving average drawn over the RSI itself — TradingView's built-in RSI indicator
+configuration (RSI Length 14, Source Close, MA Type SMA, Length 14). Entry is the state "RSI above
+its SMA"; exit is a bearish cross of the same pair. Unlike a 30/70 threshold rule it never fights a
+sustained trend, but it also gives up RSI's mean-reversion edge.
+
+Higher-timeframe confirmation uses the strategy's own RSI-vs-SMA reading rather than the shared
+`mtf_trend_confirms_buy()`: an RSI strategy has no natural fast/slow price-EMA pair to borrow.
+
+### 1h — far too active
+
+| Symbol | 2022 | 2023 | 2024 | 2025 |
+|---|---|---|---|---|
+| BTC/USD RSI | -59.53% | -18.86% | -31.61% | -47.09% |
+| BTC/USD EMA(10,30) | -24.60% | -6.52% | 14.14% | -20.10% |
+| ETH/USD RSI | -30.12% | -4.04% | -5.23% | 46.79% |
+| ETH/USD EMA(10,30) | -8.24% | -24.41% | 27.16% | 49.24% |
+| SOL/USD RSI | 68.59% | 238.39% | -1.90% | 22.52% |
+| SOL/USD EMA(10,30) | 28.44% | 332.46% | 12.08% | 30.02% |
+
+RSI closes ~250 trades a year here and loses to EMA(10,30) in 9 of 12 windows. SOL/USD 2024 alone
+paid **$12,935 in fees on a $10,000 account** (263 closed trades) to return -1.90%.
+
+### 4h and 1d — turnover falls ~30x and the ranking flips
+
+| TF | Symbol | Window | RSI | EMA(10,30) | Buy & hold | RSI closed | EMA closed | RSI maxDD | EMA maxDD |
+|---|---|---|---|---|---|---|---|---|---|
+| 4h | BTC/USD | 2022 | 2.93% | 0.00% | -64.15% | 54 | 0 | 16.2% | 0.0% |
+| 4h | BTC/USD | 2023 | 53.78% | 14.82% | 154.95% | 58 | 22 | 14.1% | 20.5% |
+| 4h | BTC/USD | 2024 | 22.61% | 65.11% | 118.48% | 52 | 23 | 15.5% | 20.1% |
+| 4h | BTC/USD | 2025 | -3.30% | 7.13% | -5.39% | 48 | 20 | 18.0% | 17.2% |
+| 4h | BTC/USD | **full** | 6,254.51% | 15,341.56% | 71,621.39% | 658 | 183 | 22.3% | 43.9% |
+| 4h | ETH/USD | 2022 | 5.85% | 0.00% | -67.52% | 59 | 0 | 17.4% | 0.0% |
+| 4h | ETH/USD | 2023 | 9.32% | -9.51% | 91.08% | 58 | 20 | 19.3% | 24.9% |
+| 4h | ETH/USD | 2024 | 27.26% | 67.76% | 46.15% | 47 | 13 | 16.1% | 20.0% |
+| 4h | ETH/USD | 2025 | 86.15% | 20.51% | -10.99% | 32 | 10 | 8.2% | 22.2% |
+| 4h | ETH/USD | **full** | 63,534.87% | 26,585.29% | 98,804.33% | 485 | 155 | 26.2% | 52.0% |
+| 4h | SOL/USD | 2022 | -14.21% | 0.00% | -94.26% | 40 | 0 | 30.2% | 0.0% |
+| 4h | SOL/USD | 2023 | 701.32% | 185.53% | 909.73% | 75 | 7 | 20.1% | 25.1% |
+| 4h | SOL/USD | 2024 | 1.86% | 37.79% | 86.36% | 42 | 24 | 16.9% | 33.2% |
+| 4h | SOL/USD | 2025 | 89.78% | 3.14% | -33.50% | 50 | 11 | 13.2% | 23.0% |
+| 4h | SOL/USD | **full** | 1,591.85% | 264.96% | 209.30% | 208 | 43 | 30.2% | 43.7% |
+| 1d | BTC/USD | 2022 | 0.00% | 0.00% | -64.19% | 0 | 0 | 0.0% | 0.0% |
+| 1d | BTC/USD | 2023 | 57.68% | 52.53% | 155.54% | 13 | 1 | 9.3% | 8.0% |
+| 1d | BTC/USD | 2024 | 18.28% | 70.61% | 120.95% | 12 | 5 | 27.9% | 31.4% |
+| 1d | BTC/USD | 2025 | -9.34% | 2.38% | -6.27% | 9 | 5 | 11.8% | 20.0% |
+| 1d | BTC/USD | **full** | 21,016.07% | 13,653.28% | 71,621.39% | 116 | 34 | 27.9% | 48.9% |
+| 1d | ETH/USD | 2022 | -2.16% | 0.00% | -67.49% | 4 | 0 | 8.8% | 0.0% |
+| 1d | ETH/USD | 2023 | 0.02% | 13.02% | 90.96% | 17 | 0 | 15.0% | 7.7% |
+| 1d | ETH/USD | 2024 | 28.93% | -2.73% | 46.07% | 10 | 5 | 16.6% | 40.3% |
+| 1d | ETH/USD | 2025 | 43.77% | 18.57% | -10.99% | 8 | 2 | 14.7% | 27.2% |
+| 1d | ETH/USD | **full** | 13,759.90% | 46,899.35% | 98,804.33% | 109 | 26 | 36.2% | 48.9% |
+| 1d | SOL/USD | 2022 | 0.00% | 0.00% | -94.14% | 0 | 0 | 0.0% | 0.0% |
+| 1d | SOL/USD | 2023 | 174.18% | 64.80% | 920.86% | 22 | 0 | 24.9% | 15.9% |
+| 1d | SOL/USD | 2024 | 28.37% | 37.65% | 85.72% | 6 | 6 | 24.7% | 53.6% |
+| 1d | SOL/USD | 2025 | 20.14% | -28.24% | -34.14% | 7 | 4 | 20.1% | 34.6% |
+| 1d | SOL/USD | **full** | 447.96% | 13.33% | 209.30% | 40 | 12 | 39.5% | 57.7% |
+
+**Head-to-head across these 30 cells: RSI 16, EMA(10,30) 12, 2 ties** — a reversal of the 1h
+result, where RSI won only 3 of 12.
+
+### Key takeaways
+
+1. **Fee drag was the entire problem.** RSI's annual cost on a $10,000 account falls from ~$7-13k
+   at `1h` to ~$2-4k at `4h` to ~$400-900 at `1d`. The signal was never the issue; the turnover was.
+   `4h` looks like the sweet spot — RSI is positive in 11 of 15 `4h` cells versus 4 of 12 at `1h`.
+2. **RSI's clearest advantage is that it trades at all.** EMA(10,30) produced **zero trades in 3 of
+   15 `4h` cells and 5 of 15 `1d` cells** — the MTF gate never opened, and all three symbols sat out
+   2022 entirely at `4h`. Those 0.00% rows "beat" a -64% to -94% buy-and-hold by doing nothing. RSI
+   has no zero-trade cells at `4h`.
+3. **RSI has lower max drawdown in every full-history cell**, often by half (ETH `4h`: 26.2% vs
+   52.0%; SOL `1d`: 39.5% vs 57.7%). This is the most consistent result in the comparison — more
+   consistent than the returns.
+4. **Still no edge over buy-and-hold.** RSI beats B&H 7/15 at `4h` and 6/15 at `1d`; EMA(10,30) 8/15
+   and 6/15. Wins remain clustered in the down years. The full-history figures inherit the
+   start-date sensitivity demonstrated in the entry above.
+5. **A note for anyone tuning the periods:** a saturated RSI generates no entries. On a monotonic
+   advance RSI pins at exactly 100, its SMA is also 100, and `trend_is_bullish()` correctly reports
+   "not bullish" on equal lines. This surfaced as five failing tests built on unrealistic fixtures.
