@@ -80,3 +80,6 @@ exclude_lines = [
     "pragma: no cover",
     "if TYPE_CHECKING:",
 ]
+
+[tool.uv]
+override-dependencies = ["aiohttp>=3.14.3", "cryptography>=50.0.0"]
