@@ -460,8 +460,17 @@ highest, setup on the middle, precise timing on the one you actually trade:
 | `5m` | `15m` | `1h` |
 | `15m` | `1h` | `4h` |
 | `1h` | `4h` | `1d` |
-| `4h` | `1d` | `1w` |
+| `4h` | `1d` | *(none)* |
 | `1d` | `1w` | `2w` |
+
+**Why `4h` confirms against one timeframe instead of two.** A weekly EMA pair turns over very
+slowly, so it can stay bearish for weeks after the daily has already turned — vetoing every `4h`
+entry through the opening leg of a move, on a timeframe whose appeal is engaging early enough to
+matter. Dropping the `1w` trend screen keeps the top-down discipline (the entry still has to agree
+with the daily) while letting a position participate sooner. The other entries keep both screens.
+
+Because tuple lengths now vary, consumers iterate `MTF_CONFIRMATION_MAP[tf]` rather than unpacking
+it positionally.
 
 This mapping lives in `MTF_CONFIRMATION_MAP` (`src/bot/strategies/base.py`), keyed by the entry
 timeframe. Every other timeframe (`1m`, `30m`, `1w`, `2w`) has no mapping, so it behaves exactly

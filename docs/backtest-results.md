@@ -881,6 +881,10 @@ Higher-timeframe confirmation uses the strategy's own RSI-vs-SMA reading rather 
 RSI closes ~250 trades a year here and loses to EMA(10,30) in 9 of 12 windows. SOL/USD 2024 alone
 paid **$12,935 in fees on a $10,000 account** (263 closed trades) to return -1.90%.
 
+> **Superseded for `4h`:** these `4h` rows were produced when `4h` confirmed against `1d`+`1w`.
+> The `1w` trend screen was dropped on 2026-08-04 (see the entry below), which changes every `4h`
+> number here. The `1h` and `1d` rows are unaffected.
+
 ### 4h and 1d — turnover falls ~30x and the ranking flips
 
 | TF | Symbol | Window | RSI | EMA(10,30) | Buy & hold | RSI closed | EMA closed | RSI maxDD | EMA maxDD |
@@ -937,3 +941,123 @@ result, where RSI won only 3 of 12.
 5. **A note for anyone tuning the periods:** a saturated RSI generates no entries. On a monotonic
    advance RSI pins at exactly 100, its SMA is also 100, and `trend_is_bullish()` correctly reports
    "not bullish" on equal lines. This surfaced as five failing tests built on unrealistic fixtures.
+
+---
+
+## 2026-08-04 — `4h` entries confirm against `1d` only (dropping the `1w` trend screen)
+
+**Change:** `MTF_CONFIRMATION_MAP["4h"]` went from `("1d", "1w")` to `("1d",)`. Every other entry
+timeframe is unchanged, so only `4h` results move; the `1h` numbers below are directly comparable
+to the 2026-08-03 entry.
+
+**Why:** a weekly EMA pair turns over very slowly and can stay bearish for weeks after the daily has
+already turned, vetoing every `4h` entry through the opening leg of a move. This is the same
+"confirmation permanently vetoes a trend" failure documented on 2026-08-02, and here it was severe
+enough to produce complete sit-outs: with the `1w` screen, `ema(10,30)` on `4h` closed **zero
+trades in all of 2022 on all three symbols**.
+
+### Effect on `4h` — `ema(10,30)`
+
+| Symbol | Window | `1d`+`1w` | `1d` only | Buy & hold | Closed trades |
+|---|---|---|---|---|---|
+| BTC/USD | 2022 | 0.00% | -34.20% | -64.15% | 0 -> 16 |
+| BTC/USD | 2023 | 14.82% | 56.68% | 154.95% | 22 -> 26 |
+| BTC/USD | 2024 | 65.11% | 65.11% | 118.48% | 23 -> 23 |
+| BTC/USD | 2025 | 7.13% | 7.13% | -5.39% | 20 -> 20 |
+| BTC/USD | **full** | 15,341.56% | 105,716.31% | 71,621.39% | 183 -> 238 |
+| ETH/USD | 2022 | 0.00% | -16.93% | -67.52% | 0 -> 11 |
+| ETH/USD | 2023 | -9.51% | 1.93% | 91.08% | 20 -> 29 |
+| ETH/USD | 2024 | 67.76% | 53.58% | 46.15% | 13 -> 19 |
+| ETH/USD | 2025 | 20.51% | 22.61% | -10.99% | 10 -> 20 |
+| ETH/USD | **full** | 26,585.29% | 342,163.37% | 98,804.33% | 155 -> 222 |
+| SOL/USD | 2022 | 0.00% | 12.38% | -94.26% | 0 -> 8 |
+| SOL/USD | 2023 | 185.53% | 442.92% | 909.73% | 7 -> 22 |
+| SOL/USD | 2024 | 37.79% | 37.79% | 86.36% | 24 -> 24 |
+| SOL/USD | 2025 | 3.14% | 24.05% | -33.50% | 11 -> 16 |
+| SOL/USD | **full** | 264.96% | 2,615.43% | 209.30% | 43 -> 87 |
+
+**Better in 9 of 15 windows, unchanged in 3, worse in 3.** All three full-history cells improved sharply, and the three zero-trade 2022 cells now trade.
+
+### Effect on `4h` — `rsi(14,14)`
+
+| Symbol | Window | `1d`+`1w` | `1d` only | Buy & hold | Closed trades |
+|---|---|---|---|---|---|
+| BTC/USD | 2022 | 2.93% | -31.09% | -64.15% | 54 -> 103 |
+| BTC/USD | 2023 | 53.78% | 35.97% | 154.95% | 58 -> 88 |
+| BTC/USD | 2024 | 22.61% | 23.03% | 118.48% | 52 -> 99 |
+| BTC/USD | 2025 | -3.30% | -16.74% | -5.39% | 48 -> 101 |
+| BTC/USD | **full** | 6,254.51% | 10,377.56% | 71,621.39% | 658 -> 1272 |
+| ETH/USD | 2022 | 5.85% | -8.70% | -67.52% | 59 -> 109 |
+| ETH/USD | 2023 | 9.32% | -11.01% | 91.08% | 58 -> 101 |
+| ETH/USD | 2024 | 27.26% | 43.08% | 46.15% | 47 -> 102 |
+| ETH/USD | 2025 | 86.15% | 37.59% | -10.99% | 32 -> 95 |
+| ETH/USD | **full** | 63,534.87% | 340,460.56% | 98,804.33% | 485 -> 1042 |
+| SOL/USD | 2022 | -14.21% | 23.28% | -94.26% | 40 -> 98 |
+| SOL/USD | 2023 | 701.32% | 512.27% | 909.73% | 75 -> 100 |
+| SOL/USD | 2024 | 1.86% | -11.50% | 86.36% | 42 -> 111 |
+| SOL/USD | 2025 | 89.78% | 182.56% | -33.50% | 50 -> 87 |
+| SOL/USD | **full** | 1,591.85% | 8,762.06% | 209.30% | 208 -> 444 |
+
+**Better in 7 of 15 windows, worse in 8.** The per-year record is mixed, but all three full-history cells improved (BTC 1.7x, ETH 5.4x, SOL 5.5x).
+
+### RSI(14,14) across `1h` and `4h`, all three symbols
+
+`1h` confirms against `4h`+`1d` (unchanged); `4h` confirms against `1d` (this change).
+
+| Symbol | Window | `1h` | `4h` | Buy & hold | `1h` closed | `4h` closed |
+|---|---|---|---|---|---|---|
+| BTC/USD | 2022 | -59.53% | -31.09% | -64.15% | 274 | 103 |
+| BTC/USD | 2023 | -18.86% | 35.97% | 154.95% | 209 | 88 |
+| BTC/USD | 2024 | -31.61% | 23.03% | 118.48% | 243 | 99 |
+| BTC/USD | 2025 | -47.09% | -16.74% | -5.39% | 260 | 101 |
+| BTC/USD | **full** | -95.55% | 10,377.56% | 71,621.39% | 3019 | 1272 |
+| ETH/USD | 2022 | -30.12% | -8.70% | -67.52% | 269 | 109 |
+| ETH/USD | 2023 | -4.04% | -11.01% | 91.08% | 218 | 101 |
+| ETH/USD | 2024 | -5.23% | 43.08% | 46.15% | 236 | 102 |
+| ETH/USD | 2025 | 46.79% | 37.59% | -10.99% | 228 | 95 |
+| ETH/USD | **full** | 2,296.06% | 340,460.56% | 98,804.33% | 2520 | 1042 |
+| SOL/USD | 2022 | 68.59% | 23.28% | -94.26% | 251 | 98 |
+| SOL/USD | 2023 | 238.39% | 512.27% | 909.73% | 244 | 100 |
+| SOL/USD | 2024 | -1.90% | -11.50% | 86.36% | 263 | 111 |
+| SOL/USD | 2025 | 22.52% | 182.56% | -33.50% | 251 | 87 |
+| SOL/USD | **full** | 2,924.05% | 8,762.06% | 209.30% | 1128 | 444 |
+
+**`4h` beats `1h` in 11 of 15 windows.** The gap is turnover: RSI closes roughly 3x as many
+trades on `1h` (BTC full history: 3,019 vs 1,272), and at ~0.62% per round trip that compounds
+against it. BTC on `1h` ends at -95.55% over full history despite the confirmation gate.
+
+### Start-date sensitivity on the new `4h` ladder
+
+Every window ends 2025-12-31; only the start moves.
+
+| Symbol | From | `rsi(14,14)` | `ema(10,30)` | Buy & hold |
+|---|---|---|---|---|
+| BTC/USD | 2018+ | 357.07% | 1,435.05% | 526.29% |
+| BTC/USD | 2020+ | 149.34% | 846.17% | 1,120.65% |
+| BTC/USD | 2022+ | -5.41% | 81.34% | 89.60% |
+| ETH/USD | 2018+ | 1,784.23% | 1,787.31% | 298.60% |
+| ETH/USD | 2020+ | 1,347.43% | 985.67% | 2,206.18% |
+| ETH/USD | 2022+ | 74.34% | 49.19% | -19.28% |
+| SOL/USD | 2018+ | 8,762.06% | 2,615.43% | 209.30% |
+| SOL/USD | 2020+ | 8,762.06% | 2,615.43% | 209.30% |
+| SOL/USD | 2022+ | 2,440.38% | 837.95% | -26.78% |
+
+SOL's `2018+` and `2020+` rows duplicate its full history (data begins 2021-06-17).
+
+### Key takeaways
+
+1. **The change fixes a real defect, not just a number.** The `1w` screen was causing total
+   sit-outs — `ema(10,30)` traded zero times in 2022 on all three symbols. SOL 2022 goes 0.00% ->
+   +12.38% against a -94% buy-and-hold simply by being allowed to participate.
+2. **`ema(10,30)` improves in 9 of 15 `4h` windows and worsens in 3**; RSI is more mixed (7 better,
+   8 worse per-year) but improves on every full-history cell.
+3. **On full history the new ladder makes `ema(10,30)` beat buy-and-hold on all three symbols at
+   once** — the first config in this log to do so. **It does not survive the start-date check:**
+   from 2020, BTC returns +846% against buy-and-hold's +1,121% and ETH +986% against +2,206%. That
+   is the fourth independent confirmation that full-history headlines in this file must not be
+   quoted without this test.
+4. **The wins that do survive are in flat-to-down periods.** From 2022, SOL returns +837.95%
+   (`ema`) and +2,440.38% (`rsi`) against a -26.78% buy-and-hold, and ETH beats buy-and-hold with
+   both strategies. BTC remains the weak spot, losing to buy-and-hold at every start date.
+5. **`4h` remains the better timeframe for RSI**, beating `1h` in most windows for the same
+   turnover reason established on 2026-08-03.

@@ -10,20 +10,31 @@ import pandas_ta as ta
 
 from src.exchange.executor import OrderSide
 
-MTF_CONFIRMATION_MAP: dict[str, tuple[str, str]] = {
+MTF_CONFIRMATION_MAP: dict[str, tuple[str, ...]] = {
     "5m": ("15m", "1h"),
     "15m": ("1h", "4h"),
     "1h": ("4h", "1d"),
-    "4h": ("1d", "1w"),
+    "4h": ("1d",),
     "1d": ("1w", "2w"),
 }
-"""Entry timeframe -> (setup timeframe, trend timeframe), both higher than the
-entry timeframe. Standard top-down multi-timeframe analysis: the strategy's
-own crossover trigger fires on the entry (primary/--timeframe) candles as
-always, but a BUY only goes through if the higher setup and trend timeframes
-independently confirm the same direction. Timeframes with no entry here (1m,
-30m, 1w, 2w) get no confirmation filtering - single-timeframe behavior,
-unchanged."""
+"""Entry timeframe -> the higher timeframes that must confirm a BUY.
+
+Standard top-down multi-timeframe analysis: the strategy's own crossover
+trigger fires on the entry (primary/--timeframe) candles as always, but a BUY
+only goes through if every timeframe listed here independently confirms the
+same direction. Timeframes with no entry here (1m, 30m, 1w, 2w) get no
+confirmation filtering - single-timeframe behavior, unchanged.
+
+Most entries confirm against both a setup and a trend timeframe. The `4h` entry
+is the exception: it confirms against its setup timeframe (`1d`) only, with no
+`1w` trend screen. A weekly EMA pair turns over very slowly, so it can stay
+bearish for weeks after the daily has turned - vetoing every `4h` entry through
+the opening leg of a move, on a timeframe whose whole appeal is engaging early
+enough to matter. Confirming against the daily alone keeps the top-down
+discipline while letting the entry participate sooner.
+
+Tuple lengths vary by design; every consumer iterates rather than unpacking
+positionally."""
 
 
 @dataclass(frozen=True)
