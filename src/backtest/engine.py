@@ -132,6 +132,10 @@ class Backtester:
         position_size_pct: Decimal = Decimal("100"),
         fee_pct: Decimal = Decimal("0"),
         slippage_pct: Decimal = Decimal("0"),
+        stop_loss_pct: Decimal = Decimal("0"),
+        take_profit_pct: Decimal = Decimal("0"),
+        trailing_trigger_pct: Decimal = Decimal("0"),
+        trailing_lock_pct: Decimal = Decimal("0"),
     ) -> None:
         if not (Decimal("0") < position_size_pct <= Decimal("100")):
             raise ValueError("position_size_pct must be between 0 (exclusive) and 100")
@@ -139,12 +143,26 @@ class Backtester:
             raise ValueError("fee_pct cannot be negative")
         if slippage_pct < 0:
             raise ValueError("slippage_pct cannot be negative")
+        if stop_loss_pct < 0 or stop_loss_pct >= 100:
+            raise ValueError("stop_loss_pct must be between 0 and 100 (exclusive)")
+        if take_profit_pct < 0:
+            raise ValueError("take_profit_pct cannot be negative")
+        if trailing_trigger_pct < 0 or trailing_lock_pct < 0:
+            raise ValueError("trailing stop percentages cannot be negative")
+        if trailing_trigger_pct > 0 and trailing_lock_pct >= trailing_trigger_pct:
+            raise ValueError("trailing_lock_pct must be below trailing_trigger_pct")
+        if trailing_trigger_pct > 0 and stop_loss_pct == 0:
+            raise ValueError("a trailing stop needs stop_loss_pct set to have a stop to raise")
         self._strategy = strategy
         self._symbol = symbol
         self._starting_balance = starting_balance
         self._position_size_pct = position_size_pct
         self._fee_pct = fee_pct
         self._slippage_pct = slippage_pct
+        self._stop_loss_pct = stop_loss_pct
+        self._take_profit_pct = take_profit_pct
+        self._trailing_trigger_pct = trailing_trigger_pct
+        self._trailing_lock_pct = trailing_lock_pct
 
     def run(
         self,
@@ -172,8 +190,50 @@ class Backtester:
         trades: list[BacktestTrade] = []
         equity_curve: list[Decimal] = []
         pending_signal: Signal | None = None
+        stop_price: Decimal | None = None
+        target_price: Decimal | None = None
 
         for i in range(len(candles)):
+            # Protective exits are resolved before the strategy's own pending
+            # signal, mirroring TradingEngine.enforce_stops() running ahead of
+            # signal generation: a position already stopped out on this bar must
+            # not also be sold by a strategy signal from the previous one.
+            if base_balance > 0 and (stop_price is not None or target_price is not None):
+                bar_low = Decimal(str(candles.iloc[i]["low"]))
+                bar_high = Decimal(str(candles.iloc[i]["high"]))
+                exit_at: Decimal | None = None
+                exit_reason = ""
+                # Stop takes precedence when a single bar spans both levels: OHLC
+                # cannot say which came first, and assuming the loss is the
+                # honest choice - the alternative flatters every result on a
+                # volatile bar.
+                if stop_price is not None and bar_low <= stop_price:
+                    exit_at, exit_reason = stop_price, f"Stop-loss hit at {stop_price}"
+                elif target_price is not None and bar_high >= target_price:
+                    exit_at, exit_reason = target_price, f"Take-profit hit at {target_price}"
+
+                if exit_at is not None:
+                    sell_price = exit_at * (1 - self._slippage_pct / 100)
+                    gross_proceeds = base_balance * sell_price
+                    fee_amount = gross_proceeds * (self._fee_pct / 100)
+                    net_proceeds = gross_proceeds - fee_amount
+                    trades.append(
+                        BacktestTrade(
+                            timestamp=candles.index[i],
+                            side=OrderSide.SELL,
+                            price=sell_price,
+                            amount=base_balance,
+                            reason=exit_reason,
+                            pnl=net_proceeds - avg_entry_price * base_balance,
+                            fee=fee_amount,
+                        )
+                    )
+                    quote_balance += net_proceeds
+                    base_balance = Decimal("0")
+                    avg_entry_price = Decimal("0")
+                    stop_price = target_price = None
+                    pending_signal = None
+
             if pending_signal is not None:
                 raw_price = Decimal(str(candles.iloc[i]["open"]))
                 timestamp = candles.index[i]
@@ -201,6 +261,10 @@ class Backtester:
                             fee=fee_amount,
                         )
                     )
+                    if self._stop_loss_pct > 0:
+                        stop_price = avg_entry_price * (1 - self._stop_loss_pct / 100)
+                    if self._take_profit_pct > 0:
+                        target_price = avg_entry_price * (1 + self._take_profit_pct / 100)
                 elif pending_signal.side == OrderSide.SELL and base_balance > 0:
                     sell_price = raw_price * (1 - self._slippage_pct / 100)
                     gross_proceeds = base_balance * sell_price
@@ -221,6 +285,20 @@ class Backtester:
                     quote_balance += net_proceeds
                     base_balance = Decimal("0")
                     avg_entry_price = Decimal("0")
+                    stop_price = target_price = None
+
+            # Ratchet after this bar's exits are settled, never before: raising
+            # the stop on the same bar's high and then testing it against the
+            # same bar's low would exit at the locked level on a bar that only
+            # touched the trigger at its very end, an ordering OHLC cannot
+            # justify. Deferring to the next bar assumes only that the trigger
+            # was genuinely reached.
+            if base_balance > 0 and stop_price is not None and self._trailing_trigger_pct > 0:
+                trigger_at = avg_entry_price * (1 + self._trailing_trigger_pct / 100)
+                if Decimal(str(candles.iloc[i]["high"])) >= trigger_at:
+                    locked = avg_entry_price * (1 + self._trailing_lock_pct / 100)
+                    if locked > stop_price:
+                        stop_price = locked
 
             sliced_higher_tf_candles = None
             if higher_tf_candles is not None:

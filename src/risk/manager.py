@@ -117,6 +117,44 @@ class RiskManager:
         stop_pct = Decimal(str(self._settings.default_stop_loss_pct))
         return entry_price * (1 + (stop_pct / 100) * ratio)
 
+    def calculate_trailing_stop_price(
+        self, entry_price: Decimal, current_stop: Decimal | None, price: Decimal
+    ) -> Decimal | None:
+        """The stop-loss price after applying the trailing ratchet, or None to leave it alone.
+
+        A one-step ratchet, not a continuously trailing stop: once `price` has
+        reached `trailing_stop_trigger_pct` above entry, the stop moves up to
+        `trailing_stop_lock_pct` above entry and then holds there for the life of
+        the position.
+
+        Deliberately returns a *price* and never touches storage or the exchange,
+        so both enforcement mechanisms consume the same number: poll-based
+        enforcement compares the live price to it, native enforcement submits it
+        as a resting order. That is what makes the ratchet identical in paper and
+        live trading.
+
+        The result is monotonic - None is returned rather than a lower price when
+        the ratchet would not raise the stop. A stop that can move down is not a
+        stop; it would let a position that already ran up be closed further and
+        further below its high, and on a cancel/replace mechanism a transient bad
+        price could otherwise widen a resting order.
+        """
+        if entry_price <= 0:
+            raise ValueError("entry_price must be positive")
+
+        trigger_pct = Decimal(str(self._settings.trailing_stop_trigger_pct))
+        if trigger_pct <= 0:
+            return None
+
+        if price < entry_price * (1 + trigger_pct / 100):
+            return None
+
+        lock_pct = Decimal(str(self._settings.trailing_stop_lock_pct))
+        raised = entry_price * (1 + lock_pct / 100)
+        if current_stop is not None and raised <= current_stop:
+            return None
+        return raised
+
     def is_drawdown_breached(self, peak_equity: Decimal, current_equity: Decimal) -> bool:
         """True if the decline from `peak_equity` exceeds `max_drawdown_pct`."""
         if peak_equity <= 0:

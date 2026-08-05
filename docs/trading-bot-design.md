@@ -336,6 +336,95 @@ Kraken uses API key + secret for authentication. Keys should be created with min
 
 ---
 
+## Stop-Loss Enforcement and the Trailing Ratchet
+
+Positions have carried `stop_loss` and `take_profit` since the first version, but until
+2026-08-05 **nothing could act on them** — the values were written on entry and only ever read
+back for JSON serialisation. `KrakenClient.create_stop_loss_order()` existed and was called from a
+unit test and nowhere else. A position's only exit was its strategy's own sell signal.
+
+### Who enforces
+
+`STOP_ENFORCEMENT` picks exactly one mechanism, never both:
+
+| Mode | Who sells | Protects while bot is down | Works in paper |
+|---|---|---|---|
+| `off` (default) | nobody — only the strategy's exit signal | n/a | n/a |
+| `poll` | the bot, comparing ticker to stop each cycle | no | yes |
+| `native` | the exchange, via a resting stop order | yes | no |
+
+**It ships `off`, and that is a measured decision rather than caution.** Across 8 stop widths
+(2–10%) × 30 windows on `4h`, no stop configuration beat leaving stops off, and none reduced
+average drawdown — see the 2026-08-05 entry in [backtest-results.md](backtest-results.md). These
+strategies already exit on an indicator turn, so a price stop can only convert a held trade into an
+earlier one, and each stop-out frees capital to re-enter and pay another round trip. A stop is
+still *recorded* on every position for reference; `off` simply means nothing acts on it, which is
+how the system behaved before enforcement existed.
+
+Running both would sell the same position twice: the exchange fills its resting stop, and the bot —
+still seeing the position in its own database — sends a second market sell, which either errors on
+insufficient balance or, on margin, opens an unintended short. `Settings.effective_stop_enforcement`
+is what the engine reads, and it forces `poll` whenever `TRADING_MODE=paper`, because
+`PaperTradingSimulator` has no resting orders to fill.
+
+`TradingEngine.enforce_stops()` runs **before** signal generation each cycle. Risk management
+protecting capital should not queue behind a strategy that may produce no signal, and a strategy
+should never be asked about a position that has already been stopped out.
+
+### The ratchet
+
+`RiskManager.calculate_trailing_stop_price()` is a pure function of `(entry, current_stop, price)`.
+Once price reaches `TRAILING_STOP_TRIGGER_PCT` above entry, the stop moves to
+`TRAILING_STOP_LOCK_PCT` above entry and holds. It is a **one-step ratchet, not a continuously
+trailing stop** — the stop moves once.
+
+Both mechanisms consume that same number: `poll` compares the live price to it, `native` submits it
+as a resting order. That is what makes the ratchet identical in paper and live, and why switching
+enforcement cannot change *where* the stop sits, only who acts on it.
+
+Two properties worth knowing:
+
+- **The result is monotonic.** A stop that can move down is not a stop, and on a cancel/replace
+  mechanism a transient bad price could otherwise widen a resting order.
+- **`stop_loss` is the ratchet's memory.** Once raised it stays raised, so a restart cannot forget
+  that the trigger was reached and drop the stop back to its opening level. No separate
+  high-water-mark column is needed — which also means no schema migration, and existing databases
+  keep working.
+
+`LOCK >= TRIGGER` is rejected at config load: the raised stop would sit at or above the price that
+armed it and fill immediately, turning the feature into "exit at the trigger", which is a
+take-profit.
+
+### Native-mode hazards
+
+- **Fills happen while the bot is away.** `_reconcile_external_close()` compares the exchange base
+  balance against the recorded position; a materially smaller balance means the stop filled, and the
+  position is closed locally at the actual fill price from `fetch_closed_orders()` (falling back to
+  the stop price). Detection is by balance rather than order id so it survives restarts and also
+  catches manual closes. A 1% tolerance keeps dust and rounding from looking like a fill.
+- **Moving a resting stop is cancel-then-create.** Kraken has no in-place amend for this order type,
+  so the replace briefly leaves the position unprotected — which is why the cancel is issued only
+  when the ratchet actually moved the stop, not on every cycle. A cancel that fails because the
+  order just filled is not an error; it is the race resolving in the exchange's favour, and the new
+  order is still placed rather than skipped.
+
+### In backtests
+
+`Backtester` models stops, targets and the ratchet so the feature is measurable against the results
+already logged. All four parameters default to 0, so every pre-existing result is unchanged.
+
+- A bar whose `low` reaches the stop exits **at the stop price**; a bar whose `high` reaches the
+  target exits at the target.
+- **When one bar spans both, the stop wins.** OHLC cannot say which came first, and assuming the
+  loss is the honest choice — the alternative flatters every result on a volatile bar.
+- **The ratchet arms at the end of a bar, never within it.** Raising the stop on a bar's high and
+  then testing it against that same bar's low would manufacture an exit the data cannot support.
+
+```bash
+uv run python scripts/backtest.py --strategy rsi --symbol SOL/USD --timeframe 4h \
+  --stop-loss-pct 2 --trailing-trigger-pct 2 --trailing-lock-pct 1
+```
+
 ## Backtesting Guide
 
 Before any strategy touches a real (or even paper) order, validate it with `scripts/backtest.py` —

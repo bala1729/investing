@@ -299,6 +299,26 @@ class PositionRepository:
                     position.entry_price - current_price
                 ) * position.amount
 
+    async def raise_stop_loss(self, symbol: str, stop_loss: Decimal) -> bool:
+        """Move a position's stop-loss up to `stop_loss`, never down.
+
+        Returns True if the stop was actually raised, so callers can act only on
+        a real change - a native stop order should be cancelled and replaced
+        only when the price it rests at has moved.
+
+        The position's stop_loss column doubles as the trailing ratchet's
+        memory: once raised it stays raised, so a bot restart cannot forget that
+        the trigger was already reached and drop the stop back to its opening
+        level. That is why no separate high-water-mark column is needed.
+        """
+        position = await self.get_by_symbol(symbol)
+        if position is None or position.amount <= 0:
+            return False
+        if position.stop_loss is not None and stop_loss <= position.stop_loss:
+            return False
+        position.stop_loss = stop_loss
+        return True
+
     async def close_position(
         self,
         symbol: str,

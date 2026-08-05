@@ -13,7 +13,7 @@ import pandas as pd
 from loguru import logger
 
 from src.bot.strategies.base import MTF_CONFIRMATION_MAP, Signal, Strategy, ohlcv_to_dataframe
-from src.config import Settings, get_settings
+from src.config import Settings, StopEnforcement, get_settings
 from src.database.repository import UnitOfWork
 from src.exchange.executor import Order, OrderExecutor, OrderSide, OrderStatus
 from src.exchange.kraken import KrakenClient
@@ -175,6 +175,196 @@ class TradingEngine:
         )
         return EngineResult(executed=True, order=order)
 
+    async def enforce_stops(self, symbol: str) -> EngineResult | None:
+        """Apply the trailing ratchet and act on the stop, before any strategy runs.
+
+        Returns None when the cycle should carry on to signal generation, or an
+        EngineResult when the position was closed (by the stop here, or by the
+        exchange while the bot was away) and there is nothing further to do this
+        cycle.
+
+        Runs ahead of the strategy deliberately: risk management protecting
+        capital must not wait behind a strategy that may or may not produce a
+        signal, and a strategy should never be asked about a position that has
+        already been stopped out.
+
+        Exactly one mechanism ever sells. Under POLL the bot compares the ticker
+        to the stop and sells at market; under NATIVE the exchange owns that
+        decision and this method only keeps the resting order in sync. Both
+        consume the same stop price from RiskManager, so switching mechanisms
+        cannot change *where* the stop sits, only who acts on it.
+        """
+        enforcement = self._settings.effective_stop_enforcement
+        # Checked before touching the database: with enforcement off this must
+        # cost nothing at all, since it runs on every cycle of every bot.
+        if enforcement is StopEnforcement.OFF:
+            return None
+
+        async with UnitOfWork() as uow:
+            position = await uow.positions.get_by_symbol(symbol)
+            # A closed position leaves a zeroed row behind, so amount is the test.
+            if position is None or position.amount <= 0:
+                return None
+            entry_price = position.entry_price
+            amount = position.amount
+            stop_price = position.stop_loss
+
+        if enforcement is StopEnforcement.NATIVE:
+            reconciled = await self._reconcile_external_close(symbol, amount, stop_price)
+            if reconciled is not None:
+                return reconciled
+
+        ticker = await self._client.fetch_ticker(symbol)
+        price = Decimal(str(ticker["last"]))
+
+        raised_stop = self._risk_manager.calculate_trailing_stop_price(
+            entry_price, stop_price, price
+        )
+        stop_moved = False
+        if raised_stop is not None:
+            async with UnitOfWork() as uow:
+                stop_moved = await uow.positions.raise_stop_loss(symbol, raised_stop)
+                await uow.commit()
+            if stop_moved:
+                stop_price = raised_stop
+                logger.info(
+                    f"Trailing stop raised for {symbol}: stop now {raised_stop} "
+                    f"(entry {entry_price}, price {price})"
+                )
+
+        if stop_price is None:
+            return None
+
+        if enforcement is StopEnforcement.NATIVE:
+            await self._sync_native_stop(symbol, amount, stop_price, replace=stop_moved)
+            return None
+
+        if price > stop_price:
+            return None
+
+        logger.warning(f"Stop-loss breached for {symbol}: price {price} <= stop {stop_price}")
+        return await self.process_signal(
+            Signal(
+                symbol=symbol,
+                side=OrderSide.SELL,
+                strategy="stop_loss",
+                reason=f"Stop-loss hit: price {price} at or below stop {stop_price}",
+            )
+        )
+
+    async def _reconcile_external_close(
+        self, symbol: str, expected_amount: Decimal, stop_price: Decimal | None
+    ) -> EngineResult | None:
+        """Detect a position the exchange closed while the bot was not looking.
+
+        Under NATIVE enforcement the stop rests on the exchange and can fill at
+        any time, including while this process is stopped. The engine otherwise
+        assumes it is the only actor - every database write follows an order it
+        placed itself - so without this the bot would carry on believing it holds
+        a position that no longer exists, and would refuse every subsequent BUY
+        as "already holding".
+
+        Detection is by balance rather than by order id: an order id would have
+        to survive a restart in a column that does not exist, whereas the base
+        balance is ground truth and also catches a manual close or an order
+        placed outside the bot.
+        """
+        base = symbol.split("/")[0]
+        available = await self._executor.get_balance(base)
+        # Tolerate dust and rounding: only a materially smaller balance means gone.
+        if available >= expected_amount * Decimal("0.99"):
+            return None
+
+        exit_price = await self._find_external_fill_price(symbol) or stop_price
+        if exit_price is None:
+            logger.error(
+                f"{symbol} was closed externally but no fill price could be determined; "
+                f"leaving the position open for manual reconciliation"
+            )
+            return None
+
+        async with UnitOfWork() as uow:
+            await uow.positions.close_position(symbol, exit_price)
+            await uow.commit()
+        logger.warning(
+            f"Reconciled {symbol}: exchange balance {available} is below the recorded "
+            f"position {expected_amount}, so the resting stop filled while the bot was "
+            f"away. Closed locally at {exit_price}."
+        )
+        return EngineResult(
+            executed=False,
+            reason=f"Position in {symbol} was closed on the exchange; reconciled locally",
+        )
+
+    async def _find_external_fill_price(self, symbol: str) -> Decimal | None:
+        """Best-effort actual fill price of an externally-closed position.
+
+        Falls back to None (callers then use the stop price) rather than
+        guessing: a wrong price here silently corrupts realized P&L, so an
+        approximation is only acceptable when it is the stop we asked for.
+        """
+        try:
+            closed = await self._client.fetch_closed_orders(symbol, limit=10)
+        except Exception:
+            logger.exception(f"Could not fetch closed orders for {symbol}")
+            return None
+        for order in closed:
+            if order.get("side") != "sell":
+                continue
+            filled_price = order.get("average") or order.get("price")
+            if filled_price:
+                return Decimal(str(filled_price))
+        return None
+
+    async def _sync_native_stop(
+        self, symbol: str, amount: Decimal, stop_price: Decimal, replace: bool
+    ) -> None:
+        """Ensure exactly one resting stop order sits at `stop_price`.
+
+        Kraken has no in-place amend for this order type, so moving the stop is
+        cancel-then-create. That gap is unavoidable and briefly leaves the
+        position unprotected, which is why the cancel is only issued when the
+        ratchet actually moved the stop (`replace`) rather than on every cycle.
+
+        A cancel that fails because the order just filled is not an error - it is
+        the race resolving in the exchange's favour, and the fill gets picked up
+        by _reconcile_external_close() on the next cycle. Creating the new order
+        is what must not be skipped.
+        """
+        try:
+            resting = [
+                order
+                for order in await self._client.fetch_open_orders(symbol)
+                if str(order.get("type", "")).replace("-", "_").startswith("stop")
+            ]
+        except Exception:
+            logger.exception(f"Could not list open orders for {symbol}; skipping stop sync")
+            return
+
+        if resting and not replace:
+            return
+
+        for order in resting:
+            try:
+                await self._client.cancel_order(str(order["id"]), symbol)
+            except Exception:
+                # Most likely already filled - reconciliation will catch it.
+                logger.warning(
+                    f"Could not cancel resting stop {order.get('id')} for {symbol}; "
+                    f"it may have just filled"
+                )
+
+        try:
+            await self._client.create_stop_loss_order(
+                symbol, "sell", float(amount), float(stop_price)
+            )
+            logger.info(f"Resting stop for {symbol} placed at {stop_price}")
+        except Exception:
+            logger.exception(
+                f"FAILED to place resting stop for {symbol} at {stop_price} - the position "
+                f"is unprotected until the next cycle"
+            )
+
     async def run_strategy_once(
         self,
         strategy: Strategy,
@@ -193,6 +383,10 @@ class TradingEngine:
         candle ("repainting", in TradingView terms) — this keeps live signal
         generation on the same footing as the backtester.
         """
+        stop_result = await self.enforce_stops(symbol)
+        if stop_result is not None:
+            return stop_result
+
         ohlcv = await self._client.fetch_ohlcv(symbol, timeframe=timeframe, limit=limit + 1)
         candles = ohlcv_to_dataframe(ohlcv[:-1])
 

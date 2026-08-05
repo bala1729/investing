@@ -42,7 +42,7 @@ and [CLAUDE_PROJECT_STATUS.md](CLAUDE_PROJECT_STATUS.md) for current implementat
    overbought/oversold levels do), or `--strategy confluence`
    (EMA crossover on Heikin Ashi candles, confirmed by MACD + RSI + Bollinger Bands) — so you can
    compare them directly on the same data. Tune it with `--fast`, `--slow`, `--signal`,
-   `--rsi-period`, `--ma-period`, `--balance`, `--position-size-pct`, `--fee-pct`, `--slippage-pct`, or point it at a different
+   `--rsi-period`, `--ma-period`, `--stop-loss-pct`, `--take-profit-pct`, `--trailing-trigger-pct`, `--trailing-lock-pct`, `--balance`, `--position-size-pct`, `--fee-pct`, `--slippage-pct`, or point it at a different
    `--symbol`/`--timeframe`. Signals fill at the *next* candle's open (never the same bar they were
    generated on), so results aren't inflated by lookahead bias, and fees/slippage are modeled by
    default so returns aren't inflated by ignoring trading costs either.

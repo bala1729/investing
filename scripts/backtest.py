@@ -160,6 +160,37 @@ def parse_args() -> argparse.Namespace:
         "actual tier and pass it explicitly (0 to disable).",
     )
     parser.add_argument(
+        "--stop-loss-pct",
+        type=Decimal,
+        default=Decimal("0"),
+        help="Exit if price falls this far below the entry. 0 (default) disables stops, "
+        "matching every result logged before they existed. A bar whose low reaches the "
+        "stop exits at the stop price.",
+    )
+    parser.add_argument(
+        "--take-profit-pct",
+        type=Decimal,
+        default=Decimal("0"),
+        help="Exit if price rises this far above the entry. 0 (default) disables it. When "
+        "one bar spans both the stop and the target, the stop wins - OHLC cannot say which "
+        "came first, and assuming the loss keeps results honest.",
+    )
+    parser.add_argument(
+        "--trailing-trigger-pct",
+        type=Decimal,
+        default=Decimal("0"),
+        help="Percent above entry that price must reach before the stop is raised. Requires "
+        "--stop-loss-pct. 0 (default) disables the trailing stop.",
+    )
+    parser.add_argument(
+        "--trailing-lock-pct",
+        type=Decimal,
+        default=Decimal("0"),
+        help="Percent above entry to move the stop to once --trailing-trigger-pct is reached. "
+        "Must be below the trigger. This is a one-step ratchet, not a continuously trailing "
+        "stop: the stop moves once and then holds.",
+    )
+    parser.add_argument(
         "--slippage-pct",
         type=Decimal,
         default=Decimal("0.05"),
@@ -298,6 +329,10 @@ async def main() -> None:
         position_size_pct=args.position_size_pct,
         fee_pct=args.fee_pct,
         slippage_pct=args.slippage_pct,
+        stop_loss_pct=args.stop_loss_pct,
+        take_profit_pct=args.take_profit_pct,
+        trailing_trigger_pct=args.trailing_trigger_pct,
+        trailing_lock_pct=args.trailing_lock_pct,
     )
     result = backtester.run(candles, higher_tf_candles=higher_tf_candles)
 

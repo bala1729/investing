@@ -3,7 +3,7 @@
 from enum import StrEnum
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -12,6 +12,22 @@ class TradingMode(StrEnum):
 
     PAPER = "paper"
     LIVE = "live"
+
+
+class StopEnforcement(StrEnum):
+    """Which mechanism is responsible for acting on a position's stop-loss.
+
+    Deliberately an either/or rather than a pair of independent toggles. If the
+    bot polled the price *and* a stop order rested on the exchange, a move
+    through the stop would trigger both: the exchange fills its stop, and the
+    bot - still seeing the position in its own database - sends a second market
+    sell. The second order either errors on insufficient balance or, on a margin
+    account, opens an unintended short.
+    """
+
+    OFF = "off"
+    POLL = "poll"
+    NATIVE = "native"
 
 
 class Settings(BaseSettings):
@@ -69,15 +85,82 @@ class Settings(BaseSettings):
     max_open_positions: int = Field(
         default=5, description="Maximum number of concurrent open positions"
     )
+    stop_enforcement: StopEnforcement = Field(
+        default=StopEnforcement.OFF,
+        description="Who is responsible for acting on a position's stop-loss. 'off' (the "
+        "default) means nobody does: a stop is still recorded on the position for reference, "
+        "but only the strategy's own exit signal ever closes a trade. 'poll' has the "
+        "bot compare the ticker price against the stop on every cycle and sell at market; "
+        "'native' rests a stop-loss order on the exchange, which keeps protecting the "
+        "position while the bot is down. Exactly one of them enforces - running both would "
+        "sell the same position twice. Paper trading never uses 'native': the paper "
+        "simulator has no resting orders to fill, so it falls back to 'poll'.\n\n"
+        "Defaults to 'off' because measurement said so - across 8 stop widths x 30 windows "
+        "on 4h, no stop configuration beat leaving stops off, and none reduced drawdown "
+        "(see docs/backtest-results.md). These strategies already exit on an indicator "
+        "turn, so a price stop only converts held trades into earlier ones and pays another "
+        "round trip to re-enter. Enable it deliberately, per bot, not by default.",
+    )
+    trailing_stop_trigger_pct: float = Field(
+        default=0.0,
+        description="Percent above entry that price must reach before the stop is raised. "
+        "0 disables the trailing stop entirely, leaving the fixed default_stop_loss_pct "
+        "stop in place.",
+    )
+    trailing_stop_lock_pct: float = Field(
+        default=0.0,
+        description="Percent above entry to move the stop to once trailing_stop_trigger_pct "
+        "is reached. Must be below the trigger, or the stop would sit above the price that "
+        "activates it and fill instantly. Note this is a one-step ratchet, not a "
+        "continuously trailing stop: the stop moves once and then holds.",
+    )
 
     # Logging
     log_level: str = Field(default="INFO", description="Logging level")
     log_file: str = Field(default="logs/trading_bot.log", description="Log file path")
 
+    @model_validator(mode="after")
+    def _validate_trailing_stop(self) -> "Settings":
+        """Reject a trailing stop that would fill the instant it is armed.
+
+        The stop is raised to `trailing_stop_lock_pct` above entry once price
+        reaches `trailing_stop_trigger_pct` above entry. If lock >= trigger, the
+        new stop sits at or above the price that just armed it, so the very next
+        check sells - turning the feature into "exit at the trigger", which is
+        a take-profit and not what anyone configuring a trailing stop wants.
+        """
+        if self.trailing_stop_trigger_pct < 0 or self.trailing_stop_lock_pct < 0:
+            raise ValueError("trailing stop percentages cannot be negative")
+        if self.trailing_stop_trigger_pct == 0:
+            return self
+        if self.trailing_stop_lock_pct >= self.trailing_stop_trigger_pct:
+            raise ValueError(
+                "trailing_stop_lock_pct must be below trailing_stop_trigger_pct, otherwise "
+                "the raised stop would sit at or above the price that armed it and fill "
+                "immediately"
+            )
+        return self
+
     @property
     def is_paper_trading(self) -> bool:
         """Check if running in paper trading mode."""
         return self.trading_mode == TradingMode.PAPER
+
+    @property
+    def effective_stop_enforcement(self) -> StopEnforcement:
+        """The enforcement mechanism actually in force, accounting for paper trading.
+
+        OFF short-circuits everything. Otherwise PaperTradingSimulator has no
+        resting orders, so a stop can only be acted on by the bot's own polling
+        there. Reading this rather than `stop_enforcement` directly is what
+        guarantees the two mechanisms never run at once: paper never resolves to
+        NATIVE regardless of configuration.
+        """
+        if self.stop_enforcement is StopEnforcement.OFF:
+            return StopEnforcement.OFF
+        if self.is_paper_trading:
+            return StopEnforcement.POLL
+        return self.stop_enforcement
 
 
 @lru_cache

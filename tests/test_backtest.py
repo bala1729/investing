@@ -442,3 +442,200 @@ class TestBuyAndHoldReturnPct:
     def test_zero_entry_price_returns_zero(self) -> None:
         candles = make_candles(opens=[0, 90], closes=[0, 80])
         assert buy_and_hold_return_pct(candles) == Decimal("0")
+
+
+def ohlc_candles(bars: list[tuple[float, float, float, float]]) -> pd.DataFrame:
+    """Build candles with explicit (open, high, low, close) so wicks can be controlled."""
+    return pd.DataFrame(
+        {
+            "open": [b[0] for b in bars],
+            "high": [b[1] for b in bars],
+            "low": [b[2] for b in bars],
+            "close": [b[3] for b in bars],
+            "volume": [100.0] * len(bars),
+        },
+        index=pd.date_range("2026-01-01", periods=len(bars), freq="1h", tz="UTC"),
+    )
+
+
+class TestBacktesterStops:
+    """Stop-loss, take-profit, and the trailing ratchet.
+
+    Without these the ratchet could not be measured against the strategies
+    already logged in docs/backtest-results.md, which is the whole reason for
+    modelling them here rather than only in the live engine.
+    """
+
+    def test_disabled_by_default(self) -> None:
+        """Existing results must not shift because stops became available."""
+        candles = ohlc_candles([(100, 100, 100, 100), (100, 100, 50, 100), (100, 100, 100, 100)])
+        result = Backtester(
+            ScriptedStrategy({0: buy()}), "BTC/USD", starting_balance=Decimal("1000")
+        ).run(candles)
+        assert [t.side for t in result.trades] == [OrderSide.BUY]
+
+    def test_stop_loss_exits_on_the_bar_that_breaches_it(self) -> None:
+        # entry fills at bar 1's open of 100, stop 2% below at 98
+        candles = ohlc_candles(
+            [(100, 100, 100, 100), (100, 101, 100, 101), (101, 101, 97, 97), (97, 97, 97, 97)]
+        )
+        result = Backtester(
+            ScriptedStrategy({0: buy()}),
+            "BTC/USD",
+            starting_balance=Decimal("1000"),
+            stop_loss_pct=Decimal("2"),
+        ).run(candles)
+
+        exits = [t for t in result.trades if t.side == OrderSide.SELL]
+        assert len(exits) == 1
+        assert exits[0].price == Decimal("98")
+        assert "Stop-loss hit" in exits[0].reason
+
+    def test_take_profit_exits_on_the_bar_that_reaches_it(self) -> None:
+        candles = ohlc_candles(
+            [(100, 100, 100, 100), (100, 100, 100, 100), (100, 105, 100, 104)]
+        )
+        result = Backtester(
+            ScriptedStrategy({0: buy()}),
+            "BTC/USD",
+            starting_balance=Decimal("1000"),
+            take_profit_pct=Decimal("4"),
+        ).run(candles)
+
+        exits = [t for t in result.trades if t.side == OrderSide.SELL]
+        assert len(exits) == 1
+        assert exits[0].price == Decimal("104")
+        assert "Take-profit hit" in exits[0].reason
+
+    def test_stop_wins_when_one_bar_spans_both_levels(self) -> None:
+        """OHLC cannot order the touches; assuming the loss keeps results honest."""
+        candles = ohlc_candles(
+            [(100, 100, 100, 100), (100, 100, 100, 100), (100, 105, 97, 100)]
+        )
+        result = Backtester(
+            ScriptedStrategy({0: buy()}),
+            "BTC/USD",
+            starting_balance=Decimal("1000"),
+            stop_loss_pct=Decimal("2"),
+            take_profit_pct=Decimal("4"),
+        ).run(candles)
+
+        exits = [t for t in result.trades if t.side == OrderSide.SELL]
+        assert len(exits) == 1
+        assert "Stop-loss hit" in exits[0].reason
+
+    def test_trailing_ratchet_turns_a_loser_into_a_winner(self) -> None:
+        """Reaching +2% then collapsing exits at +1% instead of -2%."""
+        candles = ohlc_candles(
+            [
+                (100, 100, 100, 100),
+                (100, 100, 100, 100),   # entry fills here at 100
+                (100, 103, 100, 103),   # touches +3%, arming the ratchet
+                (103, 103, 95, 95),     # collapse: raised stop at 101 catches it
+            ]
+        )
+        result = Backtester(
+            ScriptedStrategy({0: buy()}),
+            "BTC/USD",
+            starting_balance=Decimal("1000"),
+            stop_loss_pct=Decimal("2"),
+            trailing_trigger_pct=Decimal("2"),
+            trailing_lock_pct=Decimal("1"),
+        ).run(candles)
+
+        exits = [t for t in result.trades if t.side == OrderSide.SELL]
+        assert len(exits) == 1
+        assert exits[0].price == Decimal("101")
+        assert exits[0].pnl is not None and exits[0].pnl > 0
+
+    def test_ratchet_does_not_arm_on_the_same_bar_it_triggers(self) -> None:
+        """A bar that touches +2% and falls back must not exit at +1% within that bar.
+
+        OHLC gives no ordering, so treating the high as preceding the low would
+        manufacture an exit the data cannot support.
+        """
+        candles = ohlc_candles(
+            [
+                (100, 100, 100, 100),
+                (100, 100, 100, 100),   # entry at 100
+                (100, 103, 100.5, 100.5),  # touches +3% and dips below 101 in the same bar
+                (100.5, 100.6, 100.5, 100.6),
+            ]
+        )
+        result = Backtester(
+            ScriptedStrategy({0: buy()}),
+            "BTC/USD",
+            starting_balance=Decimal("1000"),
+            stop_loss_pct=Decimal("2"),
+            trailing_trigger_pct=Decimal("2"),
+            trailing_lock_pct=Decimal("1"),
+        ).run(candles)
+
+        # Bar 2 arms the ratchet; bar 3 (low 100.5) is what the raised stop catches.
+        exits = [t for t in result.trades if t.side == OrderSide.SELL]
+        assert len(exits) == 1
+        assert exits[0].timestamp == candles.index[3]
+
+    def test_stop_exit_supersedes_a_pending_strategy_signal(self) -> None:
+        """Matches the live engine, where enforce_stops() runs before the strategy."""
+        candles = ohlc_candles(
+            [(100, 100, 100, 100), (100, 100, 100, 100), (100, 100, 97, 97), (97, 97, 97, 97)]
+        )
+        result = Backtester(
+            ScriptedStrategy({0: buy(), 1: sell("strategy exit")}),
+            "BTC/USD",
+            starting_balance=Decimal("1000"),
+            stop_loss_pct=Decimal("2"),
+        ).run(candles)
+
+        exits = [t for t in result.trades if t.side == OrderSide.SELL]
+        assert len(exits) == 1
+        assert "Stop-loss hit" in exits[0].reason
+
+    def test_can_re_enter_after_being_stopped_out(self) -> None:
+        candles = ohlc_candles(
+            [
+                (100, 100, 100, 100),
+                (100, 100, 100, 100),   # entry
+                (100, 100, 97, 97),     # stopped out at 98
+                (98, 98, 98, 98),
+                (98, 98, 98, 98),       # re-entry
+                (98, 98, 98, 98),
+            ]
+        )
+        result = Backtester(
+            ScriptedStrategy({0: buy(), 3: buy("re-enter")}),
+            "BTC/USD",
+            starting_balance=Decimal("1000"),
+            stop_loss_pct=Decimal("2"),
+        ).run(candles)
+
+        assert [t.side for t in result.trades] == [
+            OrderSide.BUY, OrderSide.SELL, OrderSide.BUY
+        ]
+
+    def test_rejects_a_trailing_stop_without_a_stop_to_raise(self) -> None:
+        with pytest.raises(ValueError, match="needs stop_loss_pct set"):
+            Backtester(
+                ScriptedStrategy({}), "BTC/USD",
+                trailing_trigger_pct=Decimal("2"), trailing_lock_pct=Decimal("1"),
+            )
+
+    def test_rejects_lock_at_or_above_trigger(self) -> None:
+        with pytest.raises(ValueError, match="must be below trailing_trigger_pct"):
+            Backtester(
+                ScriptedStrategy({}), "BTC/USD", stop_loss_pct=Decimal("2"),
+                trailing_trigger_pct=Decimal("2"), trailing_lock_pct=Decimal("2"),
+            )
+
+    def test_rejects_out_of_range_stop_loss(self) -> None:
+        with pytest.raises(ValueError, match="stop_loss_pct must be between"):
+            Backtester(ScriptedStrategy({}), "BTC/USD", stop_loss_pct=Decimal("100"))
+
+    def test_rejects_negative_take_profit(self) -> None:
+        with pytest.raises(ValueError, match="take_profit_pct cannot be negative"):
+            Backtester(ScriptedStrategy({}), "BTC/USD", take_profit_pct=Decimal("-1"))
+
+    def test_rejects_negative_trailing_percentages(self) -> None:
+        with pytest.raises(ValueError, match="trailing stop percentages cannot be negative"):
+            Backtester(ScriptedStrategy({}), "BTC/USD", trailing_lock_pct=Decimal("-1"))

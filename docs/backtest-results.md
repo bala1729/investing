@@ -1061,3 +1061,81 @@ SOL's `2018+` and `2020+` rows duplicate its full history (data begins 2021-06-1
    both strategies. BTC remains the weak spot, losing to buy-and-hold at every start date.
 5. **`4h` remains the better timeframe for RSI**, beating `1h` in most windows for the same
    turnover reason established on 2026-08-03.
+
+---
+
+## 2026-08-05 — Stop-losses and a trailing ratchet: 8 widths x 30 windows, all worse than no stop
+
+**What was tested.** Stop-loss enforcement and a one-step trailing ratchet became implementable
+this session (until now `stop_loss` was recorded on a position but nothing ever acted on it, and
+`Backtester` modelled no stops at all). The question was whether either helps.
+
+**Ratchet definition:** once price reaches TRIGGER above entry, the stop moves once to LOCK above
+entry and holds. Tested as `trigger = stop width`, `lock = stop width / 2`.
+
+**Setup:** `4h` entry with `1d` confirmation, three symbols, per-year plus full history, 0.26% fee
++ 0.05% slippage. 240 runs. Baseline is the 2026-08-04 no-stop result, unchanged.
+
+### Summary — 15 windows per arm
+
+| Arm | rsi beats base | rsi avg maxDD | rsi avg win% | ema beats base | ema avg maxDD | ema avg win% |
+|---|---|---|---|---|---|---|
+| baseline (no stop) | — | 31.4% | 33.0% | — | 31.5% | 32.7% |
+| stop 2% | 1/15 | 33.4% | 30.0% | 1/15 | 35.7% | 21.7% |
+| stop 2% + ratchet | 3/15 | 33.2% | 44.2% | 1/15 | 40.0% | 44.9% |
+| stop 4% | 0/15 | 35.0% | 32.3% | 4/15 | 33.8% | 29.9% |
+| stop 4% + ratchet | 0/15 | 36.0% | 36.0% | 1/15 | 36.5% | 42.3% |
+| stop 6% | 1/15 | 33.8% | 32.8% | 2/15 | 33.1% | 32.7% |
+| stop 6% + ratchet | 1/15 | 32.9% | 34.6% | 2/15 | 35.2% | 40.8% |
+| stop 8% | 1/15 | 32.3% | 32.9% | 1/15 | 34.1% | 32.5% |
+| stop 8% + ratchet | 2/15 | 33.2% | 33.7% | 1/15 | 34.6% | 37.8% |
+| stop 10% | 1/15 | 32.7% | 32.9% | 1/15 | 33.6% | 32.4% |
+| stop 10% + ratchet | 3/15 | 32.8% | 33.4% | 1/15 | 35.4% | 35.8% |
+
+### Full-history returns by stop width
+
+Widening the stop helps monotonically - by getting further out of the way. The trend points
+straight at "no stop at all", which is another way of saying the stop contributes no edge.
+
+| Stop width | rsi BTC | rsi ETH | rsi SOL | ema BTC | ema ETH | ema SOL |
+|---|---|---|---|---|---|---|
+| baseline (no stop) | 10,378% | 340,461% | 8,762% | 105,716% | 342,163% | 2,615% |
+| stop 2% | 800% | 19,358% | 5,055% | 17,573% | 40,234% | 1,667% |
+| stop 4% | 1,009% | 19,605% | 3,695% | 26,510% | 34,387% | 1,848% |
+| stop 6% | 2,397% | 42,600% | 4,022% | 43,007% | 41,373% | 1,844% |
+| stop 8% | 3,311% | 58,673% | 5,940% | 41,732% | 43,201% | 1,766% |
+| stop 10% | 3,897% | 76,705% | 5,613% | 58,384% | 53,935% | 1,885% |
+
+### Why stops lose here
+
+1. **The strategies already have an exit.** Both sell on an indicator turn, so a price stop can
+   only fire *earlier* - it exclusively converts trades the strategy would have held into early
+   exits. On this data the held versions were better on average.
+2. **Each stop-out buys another round trip.** Closing frees capital to re-enter, and every
+   re-entry pays ~0.62% in fees and slippage. Closed-trade counts rise as stops tighten:
+   `ema(10,30)` goes from 781 closed with no stop to 1,522 at a 2% stop and 2,729 with the 2%
+   ratchet.
+3. **Drawdown does not improve, which was the whole rationale.** The best arm on either strategy
+   is `rsi` with an 8% stop at 32.3% average max drawdown, against the no-stop baseline's 31.4%.
+   Every other arm is worse; `ema` with the 2% ratchet reaches 40.0%.
+
+### The ratchet's win rate is an illusion
+
+The ratchet raises win rate sharply - `rsi` 33.0% -> 44.2%, `ema` 32.7% -> 44.9% - while lowering
+returns in nearly every window. It converts large winners into small ones capped at the lock level.
+More trades close green; less money is made. **A win-rate improvement with a return decline is the
+signature of truncating winners, and it is worth treating as a warning rather than a result.**
+The ratchet is worse than the plain stop it modifies at every width, on both strategies.
+
+### Outcome
+
+Shipped, and **disabled by default** (`STOP_ENFORCEMENT=off`). The machinery is worth having - stops
+are now genuinely enforceable, poll and native mechanisms are mutually exclusive by construction,
+and `Backtester` can measure any future variant - but no configuration tested here is worth
+enabling. All backtest stop parameters default to 0, so every earlier entry in this file remains
+valid.
+
+**Caveats on the negative result:** one timeframe (`4h`), two strategies, and the ratchet's
+trigger/lock pair was tied to the stop width rather than swept independently. A different pairing
+might behave differently. Given the direction is consistent across 8 widths and 30 windows, that
+would need a specific reason to pursue.
