@@ -80,6 +80,16 @@ def parse_args() -> argparse.Namespace:
         "to 14 if omitted.",
     )
     parser.add_argument(
+        "--exit-margin",
+        type=float,
+        default=None,
+        help="How far RSI must close below its SMA before selling, in RSI points "
+        "(--strategy rsi only). 0 (the default) exits on any bearish cross, however "
+        "shallow. A non-zero margin makes the exit a state check rather than a cross, "
+        "since a margined cross would be unreachable once RSI slips below by less than "
+        "the margin.",
+    )
+    parser.add_argument(
         "--limit",
         type=int,
         default=100,
@@ -111,6 +121,7 @@ async def main() -> None:
             signal=args.signal,
             rsi_period=args.rsi_period,
             ma_period=args.ma_period,
+            exit_margin=args.exit_margin,
         )
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc

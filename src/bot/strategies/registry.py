@@ -35,7 +35,8 @@ def build_period_kwargs(
     signal: int | None = None,
     rsi_period: int | None = None,
     ma_period: int | None = None,
-) -> dict[str, int]:
+    exit_margin: float | None = None,
+) -> dict[str, int | float]:
     """Translate CLI period options into constructor kwargs for `strategy`.
 
     The strategies do not share one parameter vocabulary: the crossover ones
@@ -55,14 +56,21 @@ def build_period_kwargs(
                     "use --rsi-period and --ma-period instead."
                 )
     else:
-        for flag, value in (("--rsi-period", rsi_period), ("--ma-period", ma_period)):
-            if value is not None:
-                raise ValueError(f"{flag} only applies to --strategy rsi, not {strategy}.")
+        # Annotated because the options are a mix of int and float; without it
+        # mypy narrows the loop variable to the first element's type.
+        rsi_only: tuple[tuple[str, float | None], ...] = (
+            ("--rsi-period", rsi_period),
+            ("--ma-period", ma_period),
+            ("--exit-margin", exit_margin),
+        )
+        for rsi_flag, rsi_value in rsi_only:
+            if rsi_value is not None:
+                raise ValueError(f"{rsi_flag} only applies to --strategy rsi, not {strategy}.")
 
     if signal is not None and strategy != "macd":
         raise ValueError(f"--signal only applies to --strategy macd, not {strategy}.")
 
-    period_kwargs: dict[str, int] = {}
+    period_kwargs: dict[str, int | float] = {}
     if fast is not None:
         period_kwargs["fast_period"] = fast
     if slow is not None:
@@ -73,6 +81,8 @@ def build_period_kwargs(
         period_kwargs["rsi_period"] = rsi_period
     if ma_period is not None:
         period_kwargs["ma_period"] = ma_period
+    if exit_margin is not None:
+        period_kwargs["exit_margin"] = exit_margin
     return period_kwargs
 
 
@@ -84,6 +94,7 @@ def create_strategy(
     signal: int | None = None,
     rsi_period: int | None = None,
     ma_period: int | None = None,
+    exit_margin: float | None = None,
 ) -> Strategy:
     """Validate the period options for `strategy` and construct it.
 
@@ -102,6 +113,7 @@ def create_strategy(
         signal=signal,
         rsi_period=rsi_period,
         ma_period=ma_period,
+        exit_margin=exit_margin,
     )
     strategy_cls: Any = STRATEGIES[strategy]
     built: Strategy = strategy_cls(**period_kwargs)

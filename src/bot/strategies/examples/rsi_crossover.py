@@ -82,18 +82,54 @@ class RSICrossoverStrategy(Strategy):
     so the previous bar's relationship can be compared against the current one.
     """
 
-    def __init__(self, rsi_period: int = 14, ma_period: int = 14) -> None:
+    def __init__(
+        self, rsi_period: int = 14, ma_period: int = 14, exit_margin: float = 0.0
+    ) -> None:
         if rsi_period <= 0:
             raise ValueError("rsi_period must be positive")
         if ma_period <= 0:
             raise ValueError("ma_period must be positive")
-        super().__init__(name=f"rsi_crossover_{rsi_period}_{ma_period}")
+        if exit_margin < 0:
+            raise ValueError("exit_margin cannot be negative")
+        name = f"rsi_crossover_{rsi_period}_{ma_period}"
+        if exit_margin > 0:
+            name += f"_m{exit_margin:g}"
+        super().__init__(name=name)
         self._rsi_period = rsi_period
         self._ma_period = ma_period
+        self._exit_margin = exit_margin
 
     @property
     def _min_candles(self) -> int:
         return self._rsi_period + self._ma_period + 1
+
+    def _exit_is_triggered(self, rsi: pd.Series, signal_line: pd.Series) -> bool:
+        """Whether the exit condition holds on the most recently closed bar.
+
+        With no margin this is the original fresh bearish cross, kept exactly so
+        that `exit_margin=0` reproduces every previously logged result.
+
+        With a margin it becomes a *state* check - "RSI is at least `margin`
+        below its SMA" - rather than a cross. That change is forced, not
+        stylistic: a margined cross would be unreachable. If RSI slips 0.05
+        below the SMA (too shallow to act on) and then falls to 0.5 below on the
+        next bar, detect_crossover() reports nothing, because the previous bar
+        was already below. The position would be held all the way down with the
+        exit permanently disarmed. Asking "is it far enough below now" instead
+        fires on the bar the condition is actually met, which is the same reason
+        entries are state-based (see trend_is_bullish()).
+
+        Emitting SELL on every bar below the threshold is harmless: callers
+        ignore a SELL when no position is open.
+        """
+        if len(rsi) == 0 or len(signal_line) == 0:
+            return False
+        if self._exit_margin <= 0:
+            return detect_crossover(rsi, signal_line) == OrderSide.SELL
+        current_rsi, current_signal = rsi.iloc[-1], signal_line.iloc[-1]
+        if pd.isna(current_rsi) or pd.isna(current_signal):
+            return False
+        return bool(current_signal - current_rsi >= self._exit_margin)
 
     def generate_signal(
         self,
@@ -108,14 +144,20 @@ class RSICrossoverStrategy(Strategy):
             candles["close"], self._rsi_period, self._ma_period
         )
 
-        if detect_crossover(rsi, signal_line) == OrderSide.SELL:
+        if self._exit_is_triggered(rsi, signal_line):
             return Signal(
                 symbol=symbol,
                 side=OrderSide.SELL,
                 strategy=self.name,
                 reason=(
-                    f"RSI({self._rsi_period})={rsi.iloc[-1]:.2f} crossed below its "
+                    f"RSI({self._rsi_period})={rsi.iloc[-1]:.2f} is at least "
+                    f"{self._exit_margin:g} below its "
                     f"SMA({self._ma_period})={signal_line.iloc[-1]:.2f}"
+                    if self._exit_margin > 0
+                    else (
+                        f"RSI({self._rsi_period})={rsi.iloc[-1]:.2f} crossed below its "
+                        f"SMA({self._ma_period})={signal_line.iloc[-1]:.2f}"
+                    )
                 ),
             )
 

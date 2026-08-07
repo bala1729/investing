@@ -37,6 +37,13 @@ class TestBuildPeriodKwargs:
         with pytest.raises(ValueError, match="--signal only applies to --strategy macd"):
             build_period_kwargs("ema", signal=9)
 
+    def test_exit_margin_maps_to_rsi_kwargs(self) -> None:
+        assert build_period_kwargs("rsi", exit_margin=1.5) == {"exit_margin": 1.5}
+
+    def test_exit_margin_is_rejected_for_other_strategies(self) -> None:
+        with pytest.raises(ValueError, match="--exit-margin only applies to --strategy rsi"):
+            build_period_kwargs("ema", exit_margin=1.5)
+
     def test_rsi_options_map_to_rsi_kwargs(self) -> None:
         assert build_period_kwargs("rsi", rsi_period=7, ma_period=3) == {
             "rsi_period": 7,
@@ -69,6 +76,7 @@ class TestCreateStrategy:
         assert create_strategy("ema", fast=5, slow=20).name == "ema_crossover_5_20"
         assert create_strategy("macd", fast=3, slow=8, signal=2).name == "macd_crossover_3_8_2"
         assert create_strategy("rsi", rsi_period=7, ma_period=3).name == "rsi_crossover_7_3"
+        assert create_strategy("rsi", exit_margin=2.0).name == "rsi_crossover_14_14_m2"
 
     def test_every_registered_strategy_builds_with_no_options(self) -> None:
         for name in STRATEGIES:

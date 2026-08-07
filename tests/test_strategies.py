@@ -226,6 +226,98 @@ class TestStateBasedEntryRecoversMissedTrends:
             assert signal.side == OrderSide.BUY
 
 
+class TestRSIExitMargin:
+    """Tests for the configurable minimum gap the exit cross must clear.
+
+    Motivated by live behaviour: on 2026-08-05 the bot took two full round trips
+    inside a ~1% price range because the 4h RSI dipped 0.10 and then 0.47 points
+    below its SMA. The unfiltered cross treats a tenth of a point exactly like a
+    collapse.
+    """
+
+    def test_defaults_to_zero_and_keeps_the_plain_cross(self) -> None:
+        """Zero margin must reproduce the original behaviour exactly."""
+        strategy = RSICrossoverStrategy(rsi_period=5, ma_period=3)
+        assert strategy._exit_margin == 0.0
+        signal = strategy.generate_signal("BTC/USD", make_candles(reversal_closes()))
+        assert signal is not None
+        assert signal.side == OrderSide.SELL
+        assert "crossed below" in signal.reason
+
+    def test_rejects_a_negative_margin(self) -> None:
+        with pytest.raises(ValueError, match="exit_margin cannot be negative"):
+            RSICrossoverStrategy(exit_margin=-0.1)
+
+    def test_name_encodes_a_non_zero_margin(self) -> None:
+        assert RSICrossoverStrategy().name == "rsi_crossover_14_14"
+        assert RSICrossoverStrategy(exit_margin=1.5).name == "rsi_crossover_14_14_m1.5"
+
+    def test_a_shallow_dip_does_not_trigger_the_exit(self) -> None:
+        closes = reversal_closes()
+        strategy = RSICrossoverStrategy(rsi_period=5, ma_period=3)
+        rsi, sma = rsi_lines(closes, 5, 3)
+        gap = sma.iloc[-1] - rsi.iloc[-1]
+        assert gap > 0  # sanity: it is below, so margin 0 would sell
+
+        # A margin wider than the actual dip must hold the position.
+        wide = RSICrossoverStrategy(rsi_period=5, ma_period=3, exit_margin=float(gap) + 1)
+        assert wide.generate_signal("BTC/USD", make_candles(closes)) is None
+        # ...while the unmargined strategy sells on the same bar.
+        assert strategy.generate_signal("BTC/USD", make_candles(closes)) is not None
+
+    def test_a_deep_dip_still_triggers_the_exit(self) -> None:
+        closes = reversal_closes()
+        rsi, sma = rsi_lines(closes, 5, 3)
+        gap = sma.iloc[-1] - rsi.iloc[-1]
+
+        narrow = RSICrossoverStrategy(rsi_period=5, ma_period=3, exit_margin=float(gap) / 2)
+        signal = narrow.generate_signal("BTC/USD", make_candles(closes))
+
+        assert signal is not None
+        assert signal.side == OrderSide.SELL
+        assert "below its" in signal.reason
+
+    def test_margined_exit_survives_a_bar_that_is_not_a_fresh_cross(self) -> None:
+        """The reason the margined exit is a state check rather than a cross.
+
+        A margined *cross* would be unreachable: once RSI slips below by too
+        little to act on, detect_crossover() reports nothing on every later bar
+        because the previous bar was already below, and the exit stays disarmed
+        all the way down.
+        """
+        closes = falling_closes()
+        rsi, sma = rsi_lines(closes, 5, 3)
+        assert detect_crossover(rsi, sma) is None  # long since below, no fresh cross
+        assert sma.iloc[-1] - rsi.iloc[-1] > 0
+
+        strategy = RSICrossoverStrategy(rsi_period=5, ma_period=3, exit_margin=0.5)
+        signal = strategy.generate_signal("BTC/USD", make_candles(closes))
+
+        assert signal is not None
+        assert signal.side == OrderSide.SELL
+
+    def test_margin_does_not_block_entries(self) -> None:
+        """The margin governs exits only; a bullish state still buys."""
+        strategy = RSICrossoverStrategy(rsi_period=5, ma_period=3, exit_margin=5.0)
+        signal = strategy.generate_signal("BTC/USD", make_candles(rising_closes()))
+        assert signal is not None
+        assert signal.side == OrderSide.BUY
+
+    def test_returns_no_signal_during_warmup(self) -> None:
+        strategy = RSICrossoverStrategy(rsi_period=5, ma_period=3, exit_margin=1.0)
+        assert strategy.generate_signal("BTC/USD", make_candles([100.0] * 8)) is None
+
+    def test_nan_indicator_values_do_not_trigger_an_exit(self) -> None:
+        strategy = RSICrossoverStrategy(rsi_period=5, ma_period=3, exit_margin=1.0)
+        nan_series = pd.Series([float("nan")] * 4)
+        assert strategy._exit_is_triggered(nan_series, nan_series) is False
+
+    def test_empty_series_do_not_trigger_an_exit(self) -> None:
+        strategy = RSICrossoverStrategy(rsi_period=5, ma_period=3, exit_margin=1.0)
+        empty = pd.Series([], dtype=float)
+        assert strategy._exit_is_triggered(empty, empty) is False
+
+
 class TestMtfTrendConfirmsBuy:
     """Tests for the shared multi-timeframe entry-confirmation helper."""
 
