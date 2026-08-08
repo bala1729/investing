@@ -85,6 +85,15 @@ class Settings(BaseSettings):
     max_open_positions: int = Field(
         default=5, description="Maximum number of concurrent open positions"
     )
+    paper_fee_pct: float = Field(
+        default=0.26,
+        description="Trading fee charged per fill in paper trading, as a percent of trade "
+        "value. Defaults to Kraken's taker rate. Paper trading charged nothing at all until "
+        "2026-08-08, which made every paper result look better than the same strategy would "
+        "in live trading - and fee drag is what decided every backtest in "
+        "docs/backtest-results.md. Check your account's actual fee tier; set 0 only if you "
+        "deliberately want frictionless results.",
+    )
     stop_enforcement: StopEnforcement = Field(
         default=StopEnforcement.OFF,
         description="Who is responsible for acting on a position's stop-loss. 'off' (the "
@@ -113,6 +122,38 @@ class Settings(BaseSettings):
         "is reached. Must be below the trigger, or the stop would sit above the price that "
         "activates it and fill instantly. Note this is a one-step ratchet, not a "
         "continuously trailing stop: the stop moves once and then holds.",
+    )
+
+    kill_switch_file: str = Field(
+        default="KILL_SWITCH",
+        description="Path to a file that, when present, halts all new entries. Exits are "
+        "never blocked - a kill switch that trapped you in a position would be worse than "
+        "none. Checked every cycle, so `touch KILL_SWITCH` stops new risk immediately "
+        "without killing the process or losing the open position's management.",
+    )
+
+    # Alerting
+    sms_alerts_enabled: bool = Field(
+        default=False,
+        description="Send SMS alerts on trade fills and on a bot found dead while holding a "
+        "position. Requires the Twilio settings below plus ALERT_PHONE_NUMBER; a "
+        "half-configured notifier silently does nothing rather than breaking the trading "
+        "loop.",
+    )
+    twilio_account_sid: str = Field(default="", description="Twilio account SID")
+    twilio_auth_token: str = Field(default="", description="Twilio auth token")
+    twilio_from_number: str = Field(
+        default="", description="Twilio number that alerts are sent from, E.164 format"
+    )
+    alert_phone_number: str = Field(
+        default="",
+        description="Destination number for alerts, E.164 format. Keep this in .env only - "
+        "it is a personal phone number and this repository is public.",
+    )
+    sms_timeout_seconds: float = Field(
+        default=10.0,
+        description="How long to wait on the SMS provider before giving up. Kept short: a "
+        "slow provider must not stall a trading cycle.",
     )
 
     # Logging

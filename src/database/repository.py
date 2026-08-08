@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database.models import (
     OrderRecord,
+    PeakEquity,
     PerformanceSnapshot,
     Position,
     Trade,
@@ -346,6 +347,39 @@ class PositionRepository:
         )
 
 
+class PeakEquityRepository:
+    """Reads and monotonically raises the per-symbol equity high-water mark."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def get(self, symbol: str) -> Decimal | None:
+        """The recorded high-water mark for `symbol`, or None if never recorded."""
+        result = await self._session.execute(
+            select(PeakEquity).where(PeakEquity.symbol == symbol)
+        )
+        row = result.scalar_one_or_none()
+        return row.peak_equity if row else None
+
+    async def record(self, symbol: str, equity: Decimal) -> Decimal:
+        """Raise the high-water mark to `equity` if it is higher, and return the mark.
+
+        Only ever moves up. A peak that could fall would make the drawdown check
+        meaningless - the decline would always be measured from a recent value
+        rather than from the account's actual best.
+        """
+        result = await self._session.execute(
+            select(PeakEquity).where(PeakEquity.symbol == symbol)
+        )
+        row = result.scalar_one_or_none()
+        if row is None:
+            self._session.add(PeakEquity(symbol=symbol, peak_equity=equity))
+            return equity
+        if equity > row.peak_equity:
+            row.peak_equity = equity
+        return row.peak_equity
+
+
 class PerformanceRepository:
     """Repository for performance tracking."""
 
@@ -413,6 +447,7 @@ class UnitOfWork:
         self._orders: OrderRepository | None = None
         self._positions: PositionRepository | None = None
         self._performance: PerformanceRepository | None = None
+        self._peak_equity: PeakEquityRepository | None = None
 
     async def __aenter__(self) -> "UnitOfWork":
         """Enter async context."""
@@ -467,6 +502,14 @@ class UnitOfWork:
         if self._performance is None:
             self._performance = PerformanceRepository(self._session)
         return self._performance
+
+    @property
+    def peak_equity(self) -> PeakEquityRepository:
+        """Peak-equity repository."""
+        if self._peak_equity is None:
+            assert self._session is not None
+            self._peak_equity = PeakEquityRepository(self._session)
+        return self._peak_equity
 
     async def commit(self) -> None:
         """Commit the transaction."""

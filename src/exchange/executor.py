@@ -40,6 +40,19 @@ class OrderStatus(StrEnum):
     FAILED = "failed"
 
 
+def _extract_fee(result: dict[str, Any]) -> Decimal:
+    """Pull the fee an exchange reported for a fill, defaulting to zero.
+
+    ccxt puts it in `fee: {cost, currency}` but not every venue populates it on
+    the create-order response. Zero is the honest default - it records "not
+    reported" rather than inventing a number - but it does mean live fees can
+    read low until the order is refetched.
+    """
+    fee = result.get("fee") or {}
+    cost = fee.get("cost")
+    return Decimal(str(cost)) if cost is not None else Decimal("0")
+
+
 @dataclass
 class Order:
     """Order data structure."""
@@ -58,6 +71,8 @@ class Order:
     exchange_order_id: str | None = None
     is_paper: bool = False
     error_message: str | None = None
+    fee: Decimal = Decimal("0")
+    fee_currency: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert order to dictionary."""
@@ -76,18 +91,28 @@ class Order:
             "exchange_order_id": self.exchange_order_id,
             "is_paper": self.is_paper,
             "error_message": self.error_message,
+            "fee": str(self.fee),
+            "fee_currency": self.fee_currency,
         }
 
 
 class PaperTradingSimulator:
     """Simulates order execution for paper trading."""
 
-    def __init__(self, client: KrakenClient) -> None:
+    def __init__(self, client: KrakenClient, fee_pct: Decimal = Decimal("0")) -> None:
         """Initialize the paper trading simulator.
 
         Args:
             client: Kraken client for fetching real market data
+            fee_pct: Fee charged per fill, as a percent of trade value. Defaults
+                to 0 for backwards compatibility with direct construction, but
+                OrderExecutor always passes the configured rate - paper results
+                that ignore fees are systematically optimistic, and fee drag is
+                what decided every result in docs/backtest-results.md.
         """
+        if fee_pct < 0:
+            raise ValueError("fee_pct cannot be negative")
+        self._fee_pct = fee_pct
         self._client = client
         self._orders: dict[str, Order] = {}
         self._balances: dict[str, Decimal] = {
@@ -128,9 +153,15 @@ class PaperTradingSimulator:
         # Parse symbol to get base and quote currencies
         base, quote = symbol.split("/")
 
+        # Fee is charged in the quote currency on both sides, matching how
+        # Kraken bills a spot trade: added to what a buy costs, deducted from
+        # what a sell returns.
+        gross = amount * fill_price
+        fee = gross * self._fee_pct / 100
+
         # Check if we have sufficient balance
         if side == OrderSide.BUY:
-            required = amount * fill_price
+            required = gross + fee
             if self._balances.get(quote, Decimal("0")) < required:
                 order = Order(
                     id=order_id,
@@ -163,13 +194,11 @@ class PaperTradingSimulator:
 
         # Execute the simulated trade
         if side == OrderSide.BUY:
-            cost = amount * fill_price
-            self._balances[quote] = self._balances.get(quote, Decimal("0")) - cost
+            self._balances[quote] = self._balances.get(quote, Decimal("0")) - (gross + fee)
             self._balances[base] = self._balances.get(base, Decimal("0")) + amount
         else:
-            proceeds = amount * fill_price
             self._balances[base] = self._balances.get(base, Decimal("0")) - amount
-            self._balances[quote] = self._balances.get(quote, Decimal("0")) + proceeds
+            self._balances[quote] = self._balances.get(quote, Decimal("0")) + (gross - fee)
 
         order = Order(
             id=order_id,
@@ -182,6 +211,8 @@ class PaperTradingSimulator:
             filled_amount=amount,
             average_fill_price=fill_price,
             is_paper=True,
+            fee=fee,
+            fee_currency=quote,
         )
         self._orders[order_id] = order
 
@@ -265,7 +296,9 @@ class OrderExecutor:
         self._settings = settings or get_settings()
         self._max_retries = max_retries
         self._retry_delay = retry_delay
-        self._paper_simulator = PaperTradingSimulator(client)
+        self._paper_simulator = PaperTradingSimulator(
+            client, fee_pct=Decimal(str(self._settings.paper_fee_pct))
+        )
 
     @property
     def is_paper_trading(self) -> bool:
@@ -325,6 +358,8 @@ class OrderExecutor:
                     average_fill_price=(
                         Decimal(str(result["average"])) if result.get("average") else None
                     ),
+                    fee=_extract_fee(result),
+                    fee_currency=(result.get("fee") or {}).get("currency"),
                     exchange_order_id=result.get("id"),
                     is_paper=False,
                 )
@@ -407,6 +442,8 @@ class OrderExecutor:
                     average_fill_price=(
                         Decimal(str(result["average"])) if result.get("average") else None
                     ),
+                    fee=_extract_fee(result),
+                    fee_currency=(result.get("fee") or {}).get("currency"),
                     exchange_order_id=result.get("id"),
                     is_paper=False,
                 )

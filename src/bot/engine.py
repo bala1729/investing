@@ -8,6 +8,7 @@ signal came from - passes through the same risk gate before it can execute.
 import asyncio
 from dataclasses import dataclass
 from decimal import Decimal
+from pathlib import Path
 
 import pandas as pd
 from loguru import logger
@@ -17,6 +18,7 @@ from src.config import Settings, StopEnforcement, get_settings
 from src.database.repository import UnitOfWork
 from src.exchange.executor import Order, OrderExecutor, OrderSide, OrderStatus
 from src.exchange.kraken import KrakenClient
+from src.notifications import SmsNotifier, format_fill_alert
 from src.risk.manager import RiskManager
 
 
@@ -36,9 +38,9 @@ class TradingEngine:
       - One open position per symbol. A BUY signal for a symbol that's
         already held is skipped rather than pyramided into; a SELL with no
         open position is skipped rather than erroring.
-      - Peak equity (for drawdown checks) is tracked in-memory per symbol
-        for this process's lifetime only - it does not persist across
-        restarts, so a restart resets the drawdown high-water mark.
+      - Peak equity (for drawdown checks) is persisted per symbol in the
+        peak_equity table, so the high-water mark survives restarts. It is
+        never lowered; clearing that row is the only way to reset it.
       - An explicit `quantity` (e.g. from a TradingView webhook) is used
         as-is; the risk manager still gates *whether* the trade happens
         (drawdown/exposure) but does not clamp an externally-specified size.
@@ -50,12 +52,13 @@ class TradingEngine:
         executor: OrderExecutor,
         risk_manager: RiskManager,
         settings: Settings | None = None,
+        notifier: SmsNotifier | None = None,
     ) -> None:
         self._client = client
         self._executor = executor
         self._risk_manager = risk_manager
         self._settings = settings or get_settings()
-        self._peak_equity: dict[str, Decimal] = {}
+        self._notifier = notifier or SmsNotifier(self._settings)
 
     async def process_signal(
         self,
@@ -92,6 +95,17 @@ class TradingEngine:
         # so "has a position" means amount > 0, not merely a non-None row.
         has_open_position = position is not None and position.amount > 0
 
+        # Kill switch gates entries only. Blocking an exit would trap capital in
+        # exactly the situation someone reaches for a kill switch.
+        if signal.side == OrderSide.BUY and self._kill_switch_engaged():
+            logger.warning(
+                f"Kill switch engaged ({self._settings.kill_switch_file}); "
+                f"refusing new entry in {signal.symbol}"
+            )
+            return EngineResult(
+                executed=False, reason="Kill switch engaged; new entries are halted"
+            )
+
         if signal.side == OrderSide.BUY and has_open_position:
             return EngineResult(
                 executed=False, reason=f"Already holding a position in {signal.symbol}"
@@ -107,8 +121,13 @@ class TradingEngine:
             else Decimal("0")
         )
         current_equity = balance + position_value
-        peak_equity = max(self._peak_equity.get(signal.symbol, current_equity), current_equity)
-        self._peak_equity[signal.symbol] = peak_equity
+        # Persisted rather than in-memory: a restart used to reset the mark to
+        # whatever equity happened to be at that moment, which disarmed the
+        # drawdown limit exactly when it mattered - a bot is most likely to be
+        # restarted right after something went wrong.
+        async with UnitOfWork() as uow:
+            peak_equity = await uow.peak_equity.record(signal.symbol, current_equity)
+            await uow.commit()
 
         decision = self._risk_manager.evaluate_signal(
             signal=signal,
@@ -148,10 +167,16 @@ class TradingEngine:
         else:
             order = await self._executor.execute_market_order(signal.symbol, signal.side, amount)
 
+        closed_pnl: Decimal | None = None
         async with UnitOfWork() as uow:
             await uow.orders.create(order, strategy=signal.strategy)
             if order.status == OrderStatus.FILLED:
-                await uow.trades.create(order, strategy=signal.strategy)
+                await uow.trades.create(
+                    order,
+                    strategy=signal.strategy,
+                    fee=order.fee,
+                    fee_currency=order.fee_currency,
+                )
                 if signal.side == OrderSide.BUY:
                     await uow.positions.create_or_update(
                         symbol=signal.symbol,
@@ -164,16 +189,54 @@ class TradingEngine:
                         take_profit=decision.take_profit_price,
                     )
                 else:
-                    await uow.positions.close_position(
+                    closed = await uow.positions.close_position(
                         signal.symbol, order.average_fill_price or reference_price
                     )
+                    if closed is not None:
+                        closed_pnl = closed.realized_pnl
             await uow.commit()
 
         logger.info(
             f"Signal executed: {signal.side.value} {order.amount} {signal.symbol} "
             f"-> {order.status.value}"
         )
+        if order.status == OrderStatus.FILLED:
+            await self._alert_fill(signal, order, closed_pnl)
         return EngineResult(executed=True, order=order)
+
+    def _kill_switch_engaged(self) -> bool:
+        """Whether the kill-switch file exists right now.
+
+        Re-read every cycle rather than cached at startup, so engaging it takes
+        effect on the next poll without restarting anything.
+        """
+        path = self._settings.kill_switch_file
+        return bool(path) and Path(path).exists()
+
+    async def _alert_fill(
+        self, signal: Signal, order: Order, closed_pnl: Decimal | None
+    ) -> None:
+        """Send a fill alert, never letting a notification failure reach the caller.
+
+        SmsNotifier already swallows its own errors; this second guard covers
+        anything raised while *building* the message. A trade that executed
+        must never be reported as failed because an SMS could not be formatted.
+        """
+        try:
+            await self._notifier.send(
+                format_fill_alert(
+                    action="ENTRY" if signal.side == OrderSide.BUY else "EXIT",
+                    symbol=signal.symbol,
+                    side=signal.side.value,
+                    amount=f"{order.filled_amount:.6f}".rstrip("0").rstrip("."),
+                    price=order.average_fill_price,
+                    strategy=signal.strategy,
+                    pnl=None if closed_pnl is None else f"{closed_pnl:+.2f}",
+                    is_paper=order.is_paper,
+                )
+            )
+        except Exception:
+            logger.exception(f"Could not send fill alert for {signal.symbol}")
 
     async def enforce_stops(self, symbol: str) -> EngineResult | None:
         """Apply the trailing ratchet and act on the stop, before any strategy runs.

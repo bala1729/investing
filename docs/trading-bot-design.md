@@ -425,6 +425,62 @@ uv run python scripts/backtest.py --strategy rsi --symbol SOL/USD --timeframe 4h
   --stop-loss-pct 2 --trailing-trigger-pct 2 --trailing-lock-pct 1
 ```
 
+## Operational Safety
+
+Added 2026-08-08 while assessing readiness for live trading. Each item closes a specific way
+the bot could have lost money quietly.
+
+### Paper trading now charges fees
+
+`PaperTradingSimulator` charged **nothing** until this change, while the backtester charged
+0.26% + 0.05%. Every paper result was therefore optimistic relative to both live trading and
+the logged backtests — and fee drag is what decided every result in
+[backtest-results.md](backtest-results.md). `PAPER_FEE_PCT` defaults to Kraken's taker rate;
+the fee is charged in quote currency on both sides, included in the affordability check, and
+persisted onto the trade record.
+
+A concrete illustration from the live paper bot: two round trips on 2026-08-05 inside a ~1%
+price range showed **+$0.27 gross**. At 0.26% those four fills cost about $5.20, so the true
+result was roughly **−$4.93**.
+
+### Peak equity survives restarts
+
+The drawdown limit measures decline from the account's best-ever equity. That high-water mark
+used to live in a dict on `TradingEngine`, so **every restart reset it** to whatever equity
+happened to be at that moment — silently disarming `MAX_DRAWDOWN_PCT` exactly when it mattered,
+since a bot is most likely to be restarted right after something went wrong. It now lives in
+the `peak_equity` table and only ever moves up. A new table rather than a new column, so
+`create_all()` adds it to existing databases without a migration.
+
+### Kill switch
+
+`touch KILL_SWITCH` halts all **new entries** from the next cycle. Exits are never blocked — a
+kill switch that trapped you in a position would be worse than none — so an open position stays
+managed by its strategy. Delete the file to resume. No restart either way.
+
+### SMS alerts and the watchdog
+
+`SmsNotifier` sends via Twilio's REST API over plain HTTP (no SDK dependency, since every
+dependency must clear pip-audit in CI). It is **off unless fully configured**, and every failure
+path is swallowed and logged: an alerting outage must never be able to stop trading. Alerts fire
+on entry and exit fills, tagged `[PAPER]` or `[LIVE]` because mistaking one for the other is the
+expensive error.
+
+`scripts/watchdog.py` checks liveness from cron and distinguishes the two cases that matter:
+
+```bash
+uv run python scripts/watchdog.py --pid-file bot.pid --symbol SOL/USD \
+    --log-file bot.log --max-log-age-minutes 45
+```
+
+A dead bot with no position is an inconvenience. A dead bot **holding** a position is dangerous —
+nothing is watching, no exit can fire, and with `STOP_ENFORCEMENT=off` there is no resting order
+either. It also treats a stale log as failure, because a hung bot looks identical to a healthy one
+in the process table.
+
+**All credentials and the destination phone number belong in `.env` only.** This repository is
+public; `.env.example` carries empty placeholders and nothing else.
+
 ## Backtesting Guide
 
 Before any strategy touches a real (or even paper) order, validate it with `scripts/backtest.py` —
