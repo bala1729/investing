@@ -458,6 +458,25 @@ the `peak_equity` table and only ever moves up. A new table rather than a new co
 kill switch that trapped you in a position would be worse than none — so an open position stays
 managed by its strategy. Delete the file to resume. No restart either way.
 
+### Paper balances survive a restart
+
+`PaperTradingSimulator` held balances in memory, which quietly broke restarts the moment a bot
+held a position: the database still recorded the position, but the simulator came back with the
+starting cash and no base currency. `process_signal()` clamps a sell to
+`min(position.amount, executor balance)`, so the position became **unsellable** — the bot would
+sit on a holding it could never exit.
+
+Balances now persist to the `paper_balances` table after every fill (not at shutdown — a bot that
+is killed, or whose machine reboots, never runs shutdown code, and that is exactly when losing
+them would hurt). `run_bot.py` calls `OrderExecutor.restore_paper_state()` before the first cycle.
+
+Persistence lives on `OrderExecutor` rather than the simulator, so the simulator stays a pure
+in-memory model with no database dependency — it is constructed directly in tests and would
+otherwise need a database to execute a single order. A save that fails is logged and swallowed:
+bookkeeping must never undo a fill that already happened.
+
+Live mode does not restore; there the exchange holds the real balances and is the source of truth.
+
 ### SMS alerts and the watchdog
 
 `SmsNotifier` sends via Twilio's REST API over plain HTTP (no SDK dependency, since every

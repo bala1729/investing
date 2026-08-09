@@ -131,6 +131,11 @@ async def main() -> None:
     await init_database()
     try:
         executor = OrderExecutor(client, settings)
+        # Before the first cycle: without this a restart would come back with
+        # the starting cash and no base currency, orphaning any open position
+        # the database still records.
+        if await executor.restore_paper_state():
+            logger.info("Resumed paper balances from the database")
         risk_manager = RiskManager(settings)
         engine = TradingEngine(client, executor, risk_manager, settings)
 

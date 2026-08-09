@@ -235,6 +235,39 @@ class PeakEquity(Base):
         }
 
 
+class PaperBalance(Base):
+    """Persisted paper-trading balances, so a restart resumes rather than resets.
+
+    PaperTradingSimulator held these in memory, which quietly broke restarts as
+    soon as a bot held a position: the database still showed the open position,
+    but the simulator came back with the starting cash and no base currency. The
+    engine clamps a sell to `min(position.amount, executor balance)`, so that
+    orphaned the position - it could never be sold, and the bot would sit on an
+    unsellable holding indefinitely.
+
+    Keyed by currency rather than symbol because balances are per-asset: one
+    USD row funds every pair the bot trades.
+    """
+
+    __tablename__ = "paper_balances"
+
+    currency: Mapped[str] = mapped_column(String(16), primary_key=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(precision=28, scale=12))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+    )
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dictionary."""
+        return {
+            "currency": self.currency,
+            "amount": str(self.amount),
+            "updated_at": self.updated_at.isoformat(),
+        }
+
+
 class PerformanceSnapshot(Base):
     """Daily performance snapshot for tracking P&L over time."""
 

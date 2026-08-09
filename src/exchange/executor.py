@@ -305,6 +305,49 @@ class OrderExecutor:
         """Check if running in paper trading mode."""
         return self._settings.is_paper_trading
 
+    async def restore_paper_state(self) -> bool:
+        """Reload persisted paper balances so a restart resumes mid-position.
+
+        Lives here rather than on PaperTradingSimulator so the simulator stays a
+        pure in-memory model with no database dependency - it is used directly
+        in tests and would otherwise need a database to execute a single order.
+
+        A no-op in live mode, where the exchange holds the real balances and is
+        already the source of truth.
+        """
+        if not self.is_paper_trading:
+            return False
+        from src.database.repository import UnitOfWork
+
+        async with UnitOfWork() as uow:
+            stored = await uow.paper_balances.load_all()
+        if not stored:
+            return False
+        for currency, amount in stored.items():
+            self._paper_simulator.set_balance(currency, amount)
+        logger.info(
+            "Restored paper balances: "
+            + ", ".join(f"{c}={a}" for c, a in sorted(stored.items()))
+        )
+        return True
+
+    async def _persist_paper_state(self) -> None:
+        """Save paper balances after a fill.
+
+        After every fill rather than at shutdown: a bot that is killed, or whose
+        machine reboots, never gets to run shutdown code - and that is exactly
+        when losing the balances would hurt.
+        """
+        from src.database.repository import UnitOfWork
+
+        try:
+            async with UnitOfWork() as uow:
+                await uow.paper_balances.save_all(self._paper_simulator.get_all_balances())
+                await uow.commit()
+        except Exception:
+            # Never fail a completed trade because bookkeeping could not be saved.
+            logger.exception("Could not persist paper balances")
+
     async def execute_market_order(
         self,
         symbol: str,
@@ -322,9 +365,10 @@ class OrderExecutor:
             Order result
         """
         if self.is_paper_trading:
-            return await self._paper_simulator.execute_market_order(
-                symbol, side, amount
-            )
+            order = await self._paper_simulator.execute_market_order(symbol, side, amount)
+            if order.status == OrderStatus.FILLED:
+                await self._persist_paper_state()
+            return order
 
         return await self._execute_live_market_order(symbol, side, amount)
 

@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database.models import (
     OrderRecord,
+    PaperBalance,
     PeakEquity,
     PerformanceSnapshot,
     Position,
@@ -347,6 +348,36 @@ class PositionRepository:
         )
 
 
+class PaperBalanceRepository:
+    """Loads and saves the paper simulator's balances."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def load_all(self) -> dict[str, Decimal]:
+        """Every persisted balance, keyed by currency. Empty on a fresh database."""
+        result = await self._session.execute(select(PaperBalance))
+        return {row.currency: row.amount for row in result.scalars().all()}
+
+    async def save_all(self, balances: dict[str, Decimal]) -> None:
+        """Overwrite the stored balances with `balances`.
+
+        Full overwrite rather than a delta: the simulator's dict is the single
+        source of truth in-process, and a partial update could leave a stale row
+        for an asset that has since gone to zero.
+        """
+        existing = await self._session.execute(select(PaperBalance))
+        rows = {row.currency: row for row in existing.scalars().all()}
+        for currency, amount in balances.items():
+            if currency in rows:
+                rows[currency].amount = amount
+            else:
+                self._session.add(PaperBalance(currency=currency, amount=amount))
+        for currency, row in rows.items():
+            if currency not in balances:
+                row.amount = Decimal("0")
+
+
 class PeakEquityRepository:
     """Reads and monotonically raises the per-symbol equity high-water mark."""
 
@@ -448,6 +479,7 @@ class UnitOfWork:
         self._positions: PositionRepository | None = None
         self._performance: PerformanceRepository | None = None
         self._peak_equity: PeakEquityRepository | None = None
+        self._paper_balances: PaperBalanceRepository | None = None
 
     async def __aenter__(self) -> "UnitOfWork":
         """Enter async context."""
@@ -510,6 +542,14 @@ class UnitOfWork:
             assert self._session is not None
             self._peak_equity = PeakEquityRepository(self._session)
         return self._peak_equity
+
+    @property
+    def paper_balances(self) -> PaperBalanceRepository:
+        """Paper-balance repository."""
+        if self._paper_balances is None:
+            assert self._session is not None
+            self._paper_balances = PaperBalanceRepository(self._session)
+        return self._paper_balances
 
     async def commit(self) -> None:
         """Commit the transaction."""

@@ -18,6 +18,7 @@ from src.database.models import init_database
 from src.database.repository import UnitOfWork
 from src.exchange.executor import (
     Order,
+    OrderExecutor,
     OrderSide,
     OrderStatus,
     OrderType,
@@ -270,4 +271,144 @@ class TestPeakEquitySerialisation:
                            __import__("datetime").UTC)).to_dict()
         assert d["symbol"] == "BTC/USD"
         assert d["peak_equity"] == "123.45"
+        assert "updated_at" in d
+
+
+class TestPaperBalancePersistence:
+    """A restart must resume mid-position rather than reset.
+
+    In-memory balances quietly broke restarts the moment a bot held something:
+    the database still showed the position, but the simulator came back with
+    starting cash and no base currency. process_signal clamps a sell to
+    min(position.amount, executor balance), so the position became unsellable.
+    """
+
+    async def test_fresh_database_keeps_the_seeded_balance(
+        self, db_settings: Settings
+    ) -> None:
+        """Nothing stored is a first run, not a lost one."""
+        executor = OrderExecutor(make_client(), db_settings)
+        assert await executor.restore_paper_state() is False
+        assert await executor.get_balance("USD") == Decimal("10000")
+
+    async def test_a_fill_is_persisted_immediately(self, db_settings: Settings) -> None:
+        """Persisted per fill, not at shutdown - a killed bot never runs shutdown code."""
+        settings = db_settings.model_copy(update={"paper_fee_pct": 0.26})
+        executor = OrderExecutor(make_client(Decimal("100")), settings)
+        await executor.execute_market_order("BTC/USD", OrderSide.BUY, Decimal("10"))
+
+        async with UnitOfWork() as uow:
+            stored = await uow.paper_balances.load_all()
+        assert stored["BTC"] == Decimal("10")
+        assert stored["USD"] == Decimal("8997.4")
+
+    async def test_a_new_executor_resumes_the_position(self, db_settings: Settings) -> None:
+        settings = db_settings.model_copy(update={"paper_fee_pct": 0.26})
+        executor = OrderExecutor(make_client(Decimal("100")), settings)
+        await executor.execute_market_order("BTC/USD", OrderSide.BUY, Decimal("10"))
+
+        restarted = OrderExecutor(make_client(Decimal("100")), settings)
+        assert await restarted.restore_paper_state() is True
+        assert await restarted.get_balance("BTC") == Decimal("10")
+        assert await restarted.get_balance("USD") == Decimal("8997.4")
+
+    async def test_the_resumed_position_can_actually_be_sold(
+        self, db_settings: Settings
+    ) -> None:
+        """The specific failure this fixes: a restart used to leave it unsellable."""
+        settings = db_settings.model_copy(update={"paper_fee_pct": 0.0})
+        executor = OrderExecutor(make_client(Decimal("100")), settings)
+        await executor.execute_market_order("BTC/USD", OrderSide.BUY, Decimal("10"))
+
+        restarted = OrderExecutor(make_client(Decimal("100")), settings)
+        await restarted.restore_paper_state()
+        order = await restarted.execute_market_order("BTC/USD", OrderSide.SELL, Decimal("10"))
+
+        assert order.status == OrderStatus.FILLED
+        assert await restarted.get_balance("BTC") == Decimal("0")
+
+    async def test_an_asset_sold_to_zero_is_not_left_stale(
+        self, db_settings: Settings
+    ) -> None:
+        settings = db_settings.model_copy(update={"paper_fee_pct": 0.0})
+        executor = OrderExecutor(make_client(Decimal("100")), settings)
+        await executor.execute_market_order("BTC/USD", OrderSide.BUY, Decimal("10"))
+        await executor.execute_market_order("BTC/USD", OrderSide.SELL, Decimal("10"))
+
+        async with UnitOfWork() as uow:
+            stored = await uow.paper_balances.load_all()
+        assert stored["BTC"] == Decimal("0")
+        assert stored["USD"] == Decimal("10000")
+
+    async def test_live_mode_does_not_restore(self, db_settings: Settings) -> None:
+        """In live mode the exchange holds the real balances and is the source of truth."""
+        from src.config import TradingMode
+
+        settings = db_settings.model_copy(update={"trading_mode": TradingMode.LIVE})
+        executor = OrderExecutor(make_client(), settings)
+        assert await executor.restore_paper_state() is False
+
+    async def test_paper_mode_restores_through_the_executor(
+        self, db_settings: Settings
+    ) -> None:
+        async with UnitOfWork() as uow:
+            await uow.paper_balances.save_all(
+                {"USD": Decimal("1234.5"), "BTC": Decimal("2")}
+            )
+            await uow.commit()
+
+        executor = OrderExecutor(make_client(), db_settings)
+        assert await executor.restore_paper_state() is True
+        assert await executor.get_balance("BTC") == Decimal("2")
+
+
+class TestPaperBalanceEdges:
+    async def test_a_currency_dropped_from_the_snapshot_is_zeroed(
+        self, db_settings: Settings
+    ) -> None:
+        """Full overwrite, not a delta - a stale row would resurrect a sold asset."""
+        async with UnitOfWork() as uow:
+            await uow.paper_balances.save_all({"USD": Decimal("100"), "BTC": Decimal("5")})
+            await uow.commit()
+        async with UnitOfWork() as uow:
+            await uow.paper_balances.save_all({"USD": Decimal("600")})
+            await uow.commit()
+        async with UnitOfWork() as uow:
+            stored = await uow.paper_balances.load_all()
+        assert stored["USD"] == Decimal("600")
+        assert stored["BTC"] == Decimal("0")
+
+    async def test_a_persistence_failure_does_not_fail_the_trade(
+        self, db_settings: Settings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Bookkeeping must never undo a fill that already happened."""
+        import src.exchange.executor as executor_module
+
+        executor = OrderExecutor(make_client(Decimal("100")), db_settings)
+
+        class Boom:
+            async def __aenter__(self) -> None:
+                raise RuntimeError("db gone")
+
+            async def __aexit__(self, *args: object) -> None:
+                return None
+
+        monkeypatch.setattr(executor_module, "UnitOfWork", Boom, raising=False)
+        with monkeypatch.context() as m:
+            m.setattr("src.database.repository.UnitOfWork", Boom)
+            order = await executor.execute_market_order(
+                "BTC/USD", OrderSide.BUY, Decimal("1")
+            )
+        assert order.status == OrderStatus.FILLED
+
+    def test_paper_balance_to_dict(self) -> None:
+        from datetime import UTC, datetime
+
+        from src.database.models import PaperBalance
+
+        d = PaperBalance(
+            currency="USD", amount=Decimal("1.5"), updated_at=datetime.now(UTC)
+        ).to_dict()
+        assert d["currency"] == "USD"
+        assert d["amount"] == "1.5"
         assert "updated_at" in d
