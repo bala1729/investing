@@ -1,0 +1,8 @@
+[
+ {"arm": "control", "strategy": "rsi_m0", "timeframe": "4h",
+  "windows": ["2022", "2023", "2024", "2025", "full"]},
+ {"arm": "m2", "strategy": "rsi_m2", "timeframe": "4h",
+  "windows": ["2022", "2023", "2024", "2025", "full"]},
+ {"arm": "m5", "strategy": "rsi_m5", "timeframe": "4h",
+  "windows": ["2022", "2023", "2024", "2025", "full"]}
+]

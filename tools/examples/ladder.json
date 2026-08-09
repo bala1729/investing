@@ -1,0 +1,7 @@
+[
+ {"arm": "4h+1d", "strategy": "rsi_m2", "timeframe": "1h", "windows": ["2024", "2025", "full"]},
+ {"arm": "4h_only", "strategy": "rsi_m2", "timeframe": "1h", "mtf": ["4h"],
+  "windows": ["2024", "2025", "full"]},
+ {"arm": "no_mtf", "strategy": "rsi_m2", "timeframe": "1h", "no_mtf": true,
+  "windows": ["2024", "2025", "full"]}
+]

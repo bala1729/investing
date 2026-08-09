@@ -1,0 +1,7 @@
+[
+ {"arm": "no_stop", "strategy": "ema(10,30)", "timeframe": "4h", "windows": ["full"]},
+ {"arm": "stop4", "strategy": "ema(10,30)", "timeframe": "4h", "windows": ["full"],
+  "stops": {"stop": 4}},
+ {"arm": "stop4+ratchet", "strategy": "ema(10,30)", "timeframe": "4h", "windows": ["full"],
+  "stops": {"stop": 4, "trigger": 4, "lock": 2}}
+]
