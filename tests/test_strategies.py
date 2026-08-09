@@ -28,6 +28,7 @@ from src.bot.strategies.examples.rsi_crossover import (
     RSICrossoverStrategy,
     mtf_rsi_confirms_buy,
     rsi_and_signal_line,
+    rsi_slope_is_positive,
 )
 from src.exchange.executor import OrderSide
 
@@ -1100,6 +1101,27 @@ class TestRSICrossoverStrategy:
         assert signal.side == OrderSide.SELL
 
 
+class TestRsiSlopeIsPositive:
+    """Tests for the higher-timeframe RSI slope guard."""
+
+    def test_true_when_rsi_rose_on_the_last_bar(self) -> None:
+        assert rsi_slope_is_positive(pd.Series([50.0, 55.0])) is True
+
+    def test_false_when_rsi_fell_on_the_last_bar(self) -> None:
+        assert rsi_slope_is_positive(pd.Series([55.0, 50.0])) is False
+
+    def test_false_when_rsi_is_flat(self) -> None:
+        assert rsi_slope_is_positive(pd.Series([50.0, 50.0])) is False
+
+    def test_false_on_insufficient_data(self) -> None:
+        assert rsi_slope_is_positive(pd.Series([50.0])) is False
+        assert rsi_slope_is_positive(pd.Series([], dtype=float)) is False
+
+    def test_false_during_indicator_warmup(self) -> None:
+        assert rsi_slope_is_positive(pd.Series([float("nan"), 50.0])) is False
+        assert rsi_slope_is_positive(pd.Series([50.0, float("nan")])) is False
+
+
 class TestMtfRsiConfirmsBuy:
     """Tests for the RSI strategy's own higher-timeframe confirmation helper."""
 
@@ -1119,6 +1141,38 @@ class TestMtfRsiConfirmsBuy:
 
     def test_empty_dict_is_vacuously_confirmed(self) -> None:
         assert mtf_rsi_confirms_buy({}, 5, 3) is True
+
+    def test_rejects_when_rsi_is_above_its_average_but_declining(self) -> None:
+        """The live failure mode this whole change guards against.
+
+        A higher timeframe can sit above its own RSI SMA (bullish by
+        trend_is_bullish()) while the RSI has already turned down bar over
+        bar - "green but declining". Built by taking a rally and appending a
+        single soft pullback bar too shallow to cross the SMA, so the state
+        check alone would still confirm.
+        """
+        closes = rising_closes()
+        rsi, sma = rsi_lines(closes, 5, 3)
+        assert trend_is_bullish(rsi, sma) is True  # sanity: still "green"
+
+        declining = closes + [closes[-1] - 0.1]
+        declining_rsi, declining_sma = rsi_lines(declining, 5, 3)
+        # sanity: still above its SMA (state check alone would confirm)...
+        assert trend_is_bullish(declining_rsi, declining_sma) is True
+        # ...but the RSI itself just turned down bar over bar
+        assert declining_rsi.iloc[-1] < declining_rsi.iloc[-2]
+
+        assert mtf_rsi_confirms_buy({"4h": make_candles(declining)}, 5, 3) is False
+
+    def test_confirmation_requires_slope_on_every_timeframe(self) -> None:
+        closes = rising_closes()
+        declining = closes + [closes[-1] - 0.1]
+        rising = make_candles(closes)
+
+        assert (
+            mtf_rsi_confirms_buy({"4h": rising, "1d": make_candles(declining)}, 5, 3)
+            is False
+        )
 
 
 class TestRsiAndSignalLine:

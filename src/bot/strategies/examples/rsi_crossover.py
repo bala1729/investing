@@ -44,10 +44,32 @@ def rsi_and_signal_line(
     return rsi, ta.sma(rsi, length=ma_period)
 
 
+def rsi_slope_is_positive(rsi: pd.Series) -> bool:
+    """Whether RSI on the most recently completed bar is higher than the bar before.
+
+    Guards a case trend_is_bullish() alone lets through: RSI can sit above its
+    SMA (state: bullish) while already rolling over bar to bar. Real case that
+    motivated this - a bot restart found the higher timeframe RSI still above
+    its SMA but declining, and confirmed an entry moments before that timeframe
+    turned. Requiring the slope to be positive too catches the decay a step
+    earlier than waiting for the SMA cross.
+
+    Returns False (not None) on insufficient data or a NaN bar, the same
+    "unconfirmable blocks rather than passes" convention as the rest of this
+    module.
+    """
+    if len(rsi) < 2:
+        return False
+    prev_rsi, curr_rsi = rsi.iloc[-2], rsi.iloc[-1]
+    if pd.isna(prev_rsi) or pd.isna(curr_rsi):
+        return False
+    return bool(curr_rsi > prev_rsi)
+
+
 def mtf_rsi_confirms_buy(
     higher_tf_candles: dict[str, pd.DataFrame], rsi_period: int, ma_period: int
 ) -> bool:
-    """Whether every higher timeframe also shows RSI above its moving average.
+    """Whether every higher timeframe shows RSI above its moving average *and* rising.
 
     The other strategies gate entries with the shared mtf_trend_confirms_buy(),
     which compares a fast and a slow price EMA. This one deliberately confirms
@@ -57,6 +79,10 @@ def mtf_rsi_confirms_buy(
     not otherwise use. Asking "is RSI above its average on the higher timeframe
     too" keeps the confirmation in the same terms as the entry.
 
+    The slope check (see rsi_slope_is_positive()) is layered on top of that
+    state check: "above its SMA" alone still confirms a higher timeframe that
+    has already turned down but hasn't crossed back below yet.
+
     Returns False on insufficient candles or during the indicator warmup, so an
     unconfirmable timeframe blocks the entry rather than silently passing it.
     """
@@ -65,6 +91,8 @@ def mtf_rsi_confirms_buy(
             return False
         rsi, signal_line = rsi_and_signal_line(candles["close"], rsi_period, ma_period)
         if not trend_is_bullish(rsi, signal_line):
+            return False
+        if not rsi_slope_is_positive(rsi):
             return False
     return True
 
