@@ -1204,3 +1204,88 @@ symbols and all 5 years.** Not shipped; no code changes. The MTF gate on `15m` i
 overhead, it's the only thing standing between this entry rule and total fee-driven ruin - any future
 `15m` day-trading variant needs either MTF confirmation kept on or some other hard cap on trade
 frequency (e.g. a minimum bars-between-entries rule), not just a profit target layered on top.
+
+---
+
+## 2026-08-10 — Re-sweeping `4h` after the RSI-slope confirmation: first strategy in this file to survive the start-date check on every symbol
+
+**Why this run exists.** The RSI-slope confirmation added 2026-08-09 (`ff706bd`) hadn't been
+re-swept on `4h` - the only place it had been checked was a `1h` control arm, where it moved
+SOL/USD 2024 from -1.90% to +103.50%. Before treating `SOL/USD 4h rsi_m2` (the config the two live
+paper bots run) as good enough to consider live, it needed the same full-history + start-date
+treatment every other headline number in this file gets.
+
+**Setup:** `tools/examples/margin.json` (control=`rsi_m0`, `m2`, `m5`, all `4h` confirming against
+`1d`), 3 symbols, 2022-2025 + full, then a follow-up `tools/examples/margin_4h_startdate.json` for
+the `2018+`/`2020+`/`2022+` start-date check. Commands: `uv run python tools/sweep.py
+rsi_margin_4h_post_slope tools/examples/margin.json` and `... rsi_margin_4h_startdate
+tools/examples/margin_4h_startdate.json`.
+
+**Control arm validated the harness, not just the strategy.** Monkeypatching the slope check back
+to always-true reproduced the exact pre-slope baseline (BTC full 10,377.56%/1,272 closed, matching
+2026-08-04 exactly) - confirming the difference below is caused by the slope filter alone, not a
+data refresh or a sweep bug.
+
+### Full-history `4h`, before vs after the slope confirmation (`rsi(14,14)` / `rsi_m0`)
+
+| Symbol | Pre-slope (2026-08-04) | Post-slope | Multiple | Closed trades (pre → post) |
+|---|---|---|---|---|
+| BTC/USD | 10,377.56% | 233,587.49% | 22.5x | 1,272 → 1,087 |
+| ETH/USD | 340,460.56% | 4,225,942.06% | 12.4x | 1,042 → 908 |
+| SOL/USD | 8,762.06% | 53,731.97% | 6.1x | 444 → 382 |
+
+The filter blocked only ~13-14% of entries on each symbol. A change of this size from that small a
+change in trade count is a compounding effect, not linear: on 100%-of-balance, all-in/all-out
+compounding, removing entries made right as the higher-timeframe (`1d`) RSI was already rolling
+over disproportionately removes trades that were about to go badly, and a handful of avoided bad
+entries early in a multi-year run changes every subsequent position size downstream.
+
+### Start-date sensitivity - the check that has reversed 4 prior headlines in this file
+
+Every window ends 2025-12-31; only the start moves. `rsi_m2` is what the two live paper bots run.
+
+| Symbol | Start | `rsi_m0` | `rsi_m2` | Buy & hold |
+|---|---|---|---|---|
+| BTC/USD | 2018+ | 4,005.72% | 7,789.41% | 526.29% |
+| BTC/USD | 2020+ | 1,201.42% | 2,041.90% | 1,120.65% |
+| BTC/USD | 2022+ | 214.75% | 328.25% | 89.60% |
+| ETH/USD | 2018+ | 10,871.13% | 38,544.99% | 298.60% |
+| ETH/USD | 2020+ | 4,610.38% | 11,384.59% | 2,206.18% |
+| ETH/USD | 2022+ | 281.30% | 519.49% | -19.28% |
+| SOL/USD | 2018+/2020+ | 53,731.97% | 135,437.78% | 209.30% |
+| SOL/USD | 2022+ | 12,042.89% | 25,136.55% | -26.78% |
+
+**Beats buy-and-hold in all 9 symbol/start-date cells, for both `rsi_m0` and `rsi_m2`.** This is
+the first strategy logged in this file to clear that bar - the 2026-08-04 entry explicitly
+documented `rsi(14,14)` *failing* this exact check (BTC lost to buy-and-hold at every start date;
+ETH lost from 2020). The slope filter is what closed that gap: BTC 2020+ went from 149.34% (losing
+to buy-and-hold's 1,120.65%) to 2,041.90% on `rsi_m2` (beating it).
+
+**`rsi_m2` beats `rsi_m0` in every cell above**, consistent with the live bots' exit-margin choice.
+
+### Caveats before reading too much into this
+
+1. **Per-year is much less clean than full-history.** `rsi_m2` on BTC/USD: +20.82% (2022), +71.90%
+   (2023), +91.36% (2024), +8.50% (2025) against buy-and-hold's -64.15%/154.95%/118.48%/-5.39% -
+   **it loses to buy-and-hold in 2023 and 2024**, both strong bull years, and wins are still
+   concentrated in the down/choppy years (2022, 2025). The full-history and start-date numbers look
+   dominant because compounding rewards *not losing 64% in 2022*, not because every year wins.
+2. **These are full-balance, all-in/all-out compounding figures**, same caveat as every other
+   number in this file - real execution (partial fills, slippage in fast markets, not always being
+   able to enter/exit at the exact bar close) will not reproduce numbers like SOL's 135,437.78%
+   literally. Read the multiples over buy-and-hold and the start-date robustness as the finding, not
+   the absolute percentages.
+3. **One filter, one confirmation timeframe (`1d`), three correlated crypto assets.** All three
+   symbols moved in the same direction by a similar mechanism - encouraging, but it is not
+   independent confirmation the way a genuinely different asset class would be.
+4. **The live order path is untested regardless of this result.** No backtest result changes that;
+   see the paper-bot state notes.
+
+### Outcome
+
+Not a code change - this is a re-validation of the config the live paper bots already run
+(`rsi_m2`, `4h`, confirms against `1d`). The strategy's statistical case is now meaningfully
+stronger than it was a week ago: it's the first to survive the start-date check on every symbol
+tested. Raises confidence in the *entry logic*; does not by itself clear the bot for live trading -
+the live order-execution path (`OrderExecutor` against Kraken, not the paper simulator) has never
+placed a real order and this sweep says nothing about it.
