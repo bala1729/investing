@@ -1,0 +1,11 @@
+[
+ {"arm": "control_1h_mtf", "strategy": "rsi_m0", "timeframe": "1h",
+  "windows": ["2024"]},
+ {"arm": "baseline_15m_mtf", "strategy": "rsi_m0", "timeframe": "15m",
+  "windows": ["2021", "2022", "2023", "2024", "2025"]},
+ {"arm": "15m_no_mtf", "strategy": "rsi_m0", "timeframe": "15m",
+  "windows": ["2021", "2022", "2023", "2024", "2025"], "no_mtf": true},
+ {"arm": "15m_no_mtf_tp1", "strategy": "rsi_m0", "timeframe": "15m",
+  "windows": ["2021", "2022", "2023", "2024", "2025"], "no_mtf": true,
+  "stops": {"target": 1}}
+]

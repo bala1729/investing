@@ -1139,3 +1139,68 @@ valid.
 trigger/lock pair was tied to the stop width rather than swept independently. A different pairing
 might behave differently. Given the direction is consistent across 8 widths and 30 windows, that
 would need a specific reason to pursue.
+
+---
+
+## 2026-08-09 — 15m RSI with no MTF confirmation, plain and with a 1% take-profit: total account loss in every window
+
+**What was tested.** A day-trading variant: `rsi_m0` (RSI(14) vs its own SMA(14), the plain
+crossover exit) on `15m` with the multi-timeframe confirmation gate turned off (`no_mtf`), so entry
+depends only on the 15m candles - no `1h`/`4h` agreement required. Two arms: the bare strategy, and
+the same thing with a full-position take-profit at +1% layered on top (`stops.target=1`). No new
+strategy class was needed - `RSICrossoverStrategy` already skips confirmation when it isn't given
+higher-timeframe candles; `tools/sweep.py`'s existing `no_mtf` flag does exactly this.
+
+**Setup:** 3 symbols x 5 calendar years (2021-2025) x 2 arms = 30 runs, plus a `15m` **with** MTF
+arm for comparison and a `1h`-with-MTF control arm to validate the harness before trusting anything
+below. `full` was not run at `15m` - BTC alone is ~385k `15m` candles and, per the 2026-08-02 entry,
+the backtester's per-bar cost grows superlinearly at that size.
+Config: `tools/examples/rsi_15m_tp1_no_mtf.json`. Command: `uv run python tools/sweep.py
+rsi_15m_tp1_no_mtf tools/examples/rsi_15m_tp1_no_mtf.json`.
+
+**Control arm caught a real change, not a bug.** The `1h`-with-MTF control (SOL/USD, 2024) returned
++103.50% (201 closed) against this file's logged baseline of -1.90% (263 closed, $12,935 fees) from
+2026-08-03. Confirmed by direct comparison (monkeypatching the new check back to always-true
+reproduces -1.90%/263 exactly) that the cause is the RSI-slope confirmation added to
+`mtf_rsi_confirms_buy()` earlier the same session (guards against confirming a BUY off a higher
+timeframe that's above its SMA but already declining) - not a harness defect. Every MTF-confirmed
+RSI baseline elsewhere in this file predates that change and is no longer reproducible as logged.
+
+### Results: `no_mtf` and `no_mtf` + 1% take-profit
+
+**Every one of the 30 windows returned -100% (or -99.99%) and none differ from any other in kind -
+this was total, not partial, account loss.** Representative rows (fees on a $10,000 start):
+
+| Arm | Symbol | Window | Return | Closed trades | Fees |
+|---|---|---|---|---|---|
+| no_mtf | BTC/USD | 2021 | -100.00% | 2,998 | $9,977 |
+| no_mtf | ETH/USD | 2021 | -100.00% | 2,955 | $13,730 |
+| no_mtf | SOL/USD | 2021 | -99.99% | 1,668 | $7,777 |
+| no_mtf_tp1 | BTC/USD | 2021 | -100.00% | 3,870 | $8,429 |
+| no_mtf_tp1 | ETH/USD | 2021 | -100.00% | 4,205 | $10,553 |
+| no_mtf_tp1 | SOL/USD | 2021 | -100.00% | 2,505 | $5,856 |
+
+Fees alone consumed $5,856-$13,730 of the $10,000 starting balance in every single symbol/year,
+before counting realized trading losses - full 30-row output in `data/sweeps/rsi_15m_tp1_no_mtf.json`.
+
+**Why:** the MTF gate is this codebase's only throttle on a state-based entry ("buy on every bar RSI
+sits above its SMA"). Remove it and the strategy re-evaluates and re-fires on every `15m` bar,
+closing 1,700-4,300 trades a year - roughly one round trip every 90-150 minutes, around the clock.
+At 0.26% fee + 0.05% slippage per fill that is enough to grind any starting balance to dust well
+before the year ends (see the last closed trades in a raw run: position sizes down to
+0.000002 SOL). Adding the 1% take-profit made turnover *higher*, not lower, in every case (e.g. BTC
+2021: 2,998 -> 3,870 closed) - it adds another automatic exit-then-re-entry cycle on top of an
+already-unfiltered entry, accelerating the same fee bleed rather than protecting against it.
+
+For reference, `15m` **with** MTF confirmation (also run, `baseline_15m_mtf` arm) avoids total wipeout
+but is still weak and inconsistent - e.g. SOL/USD ranges from +497% (2022) to -59% (2025) - consistent
+with every prior finding in this file that `15m` entries are fee-dominated and unreliable even when
+filtered.
+
+### Outcome
+
+**Not viable as tested - this is a wipeout result, not a marginal loss, and consistent across all 3
+symbols and all 5 years.** Not shipped; no code changes. The MTF gate on `15m` isn't optional
+overhead, it's the only thing standing between this entry rule and total fee-driven ruin - any future
+`15m` day-trading variant needs either MTF confirmation kept on or some other hard cap on trade
+frequency (e.g. a minimum bars-between-entries rule), not just a profit target layered on top.
