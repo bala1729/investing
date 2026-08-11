@@ -20,7 +20,8 @@ def configured(**overrides: object) -> Settings:
     base = {
         "sms_alerts_enabled": True,
         "twilio_account_sid": "AC_test",
-        "twilio_auth_token": "token",
+        "twilio_api_key_sid": "SK_test",
+        "twilio_api_key_secret": "secret",
         "twilio_from_number": "+15550000000",
         "alert_phone_number": "+15550000001",
     }
@@ -37,7 +38,13 @@ class TestIsConfigured:
 
     @pytest.mark.parametrize(
         "missing",
-        ["twilio_account_sid", "twilio_auth_token", "twilio_from_number", "alert_phone_number"],
+        [
+            "twilio_account_sid",
+            "twilio_api_key_sid",
+            "twilio_api_key_secret",
+            "twilio_from_number",
+            "alert_phone_number",
+        ],
     )
     def test_any_missing_credential_disables_it(self, missing: str) -> None:
         """Half-configured must mean off, not a runtime failure mid-trade."""
@@ -64,6 +71,19 @@ class TestSend:
         assert payload["To"] == "+15550000001"
         assert payload["From"] == "+15550000000"
         assert payload["Body"] == "hello"
+
+    async def test_authenticates_with_the_api_key_not_the_account_sid_pair(self) -> None:
+        """The API key SID/secret must be what's sent, not the account SID paired with
+        anything else - a leaked API key should be revocable without touching the
+        account's own credential."""
+        notifier = SmsNotifier(configured())
+        response = AsyncMock()
+        response.status = 201
+        with patch("aiohttp.ClientSession.post") as post:
+            post.return_value.__aenter__.return_value = response
+            await notifier.send("hello")
+        headers = post.call_args.kwargs["headers"]
+        assert headers["Authorization"] == aiohttp.encode_basic_auth("SK_test", "secret")
 
     async def test_provider_rejection_returns_false_without_raising(self) -> None:
         notifier = SmsNotifier(configured())

@@ -163,8 +163,20 @@ class Settings(BaseSettings):
         "half-configured notifier silently does nothing rather than breaking the trading "
         "loop.",
     )
-    twilio_account_sid: str = Field(default="", description="Twilio account SID")
-    twilio_auth_token: str = Field(default="", description="Twilio auth token")
+    twilio_account_sid: str = Field(
+        default="", description="Twilio account SID - still required alongside the API "
+        "key below, since the REST endpoint is namespaced by it even when authenticating "
+        "with a key rather than the account's own auth token."
+    )
+    twilio_api_key_sid: str = Field(
+        default="",
+        description="Twilio API Key SID, used for REST auth instead of the account's own "
+        "auth token. An API key can be scoped and revoked independently of the account "
+        "credential, so a leak here doesn't hand over the whole Twilio account.",
+    )
+    twilio_api_key_secret: str = Field(
+        default="", description="Secret for the API key above. Keep in .env only."
+    )
     twilio_from_number: str = Field(
         default="", description="Twilio number that alerts are sent from, E.164 format"
     )

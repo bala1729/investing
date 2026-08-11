@@ -44,7 +44,8 @@ class SmsNotifier:
         return bool(
             s.sms_alerts_enabled
             and s.twilio_account_sid
-            and s.twilio_auth_token
+            and s.twilio_api_key_sid
+            and s.twilio_api_key_secret
             and s.twilio_from_number
             and s.alert_phone_number
         )
@@ -70,11 +71,14 @@ class SmsNotifier:
             "From": s.twilio_from_number,
             "Body": body,
         }
+        # An API Key SID/secret pair, not the account's own auth token - scoped and
+        # revocable independently of the account credential. The account SID still
+        # namespaces the URL above; it just isn't the auth credential here.
         # encode_basic_auth rather than aiohttp.BasicAuth: the latter is
         # deprecated and removed in aiohttp 4.0.
         headers = {
             "Authorization": aiohttp.encode_basic_auth(
-                s.twilio_account_sid, s.twilio_auth_token
+                s.twilio_api_key_sid, s.twilio_api_key_secret
             )
         }
 
