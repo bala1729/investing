@@ -352,6 +352,27 @@ class TestOrderExecutorLiveMode:
         assert kraken_client.fetch_order.await_count == 2
         kraken_client.create_market_order.assert_awaited_once()  # still never retried
 
+    async def test_a_transient_fetch_error_is_retried_not_given_up_on(
+        self, kraken_client: AsyncMock
+    ) -> None:
+        """Regression: observed live against real Kraken - fetch_order raised
+        OrderNotFound immediately after an order was created, for an order that had,
+        in fact, already filled; fetching again moments later succeeded cleanly. The
+        old code gave up on the first exception instead of retrying like it already
+        did for a status still reading "open"."""
+        kraken_client.create_market_order.return_value = {"id": "ex1", "txid": ["ex1"]}
+        kraken_client.fetch_order.side_effect = [
+            RuntimeError("OrderNotFound"),
+            {"status": "closed", "filled": "0.01", "average": "45000"},
+        ]
+        executor = make_live_executor(kraken_client)
+
+        order = await executor.execute_market_order("BTC/USD", OrderSide.BUY, Decimal("0.01"))
+
+        assert order.status == OrderStatus.FILLED
+        assert kraken_client.fetch_order.await_count == 2
+        kraken_client.create_market_order.assert_awaited_once()  # still never retried
+
     async def test_unconfirmable_fill_status_reports_open_not_failed(
         self, kraken_client: AsyncMock
     ) -> None:

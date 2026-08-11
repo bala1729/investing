@@ -1458,8 +1458,66 @@ robustness is the finding; a single calendar year is too short a sample to expec
 
 **This is now a three-symbol, start-date-robust result**, not a SOL-only curiosity - the strongest
 backtested case in this project's history for an engine-level protective mechanism improving
-return, win rate, and (mostly) drawdown together rather than trading one for another. Still not
-live-actionable: live take-profit enforcement does not exist in `TradingEngine` at any fraction, so
-this remains backtest-only until that's built. If pursued further: build live take-profit
-enforcement (the natural next step now that the backtest case is this robust), and consider running
-the same width sweep on `1h`/`1d` to see if the effect is timeframe-specific to `4h`.
+return, win rate, and (mostly) drawdown together rather than trading one for another. Live
+take-profit enforcement was built later the same day (see the entry below on going live) - this
+remained backtest-only at the time this section was written, and now has a live path.
+
+---
+
+## 2026-08-11 — Extending the partial-take-profit sweep to ADA/USD before considering it for live trading
+
+**Why this run exists.** A request to run a live bot on ADA/USD surfaced that ADA had never been
+backtested in this project at all - every result above (RSI-slope confirmation, the take-profit
+sweep, the start-date checks) covers BTC/ETH/SOL only. Before treating `rsi_m2`/`4h` (with or
+without take-profit) as validated for ADA, it needed the same treatment. Data source: Kraken's tick
+archive has `ADAUSD.csv`, covering 2018-09-28 through 2025-12-31 - comparable span to ETH's.
+
+**Setup:** identical commands and config files as the BTC/ETH/SOL sweep
+(`tools/examples/rsi_m2_4h_partial_tp_sweep.json`, `tools/examples/rsi_m2_4h_partial_tp_startdate.json`),
+just `SWEEP_SYMBOLS=ADA/USD`.
+
+### Full-history
+
+| Arm | Return | Closed | Win% | MaxDD |
+|---|---|---|---|---|
+| control (no TP) | 360,274.95% | 495 | 45.05% | 34.28% |
+| tp5_e70 | 47,640.20% | 717 | 62.20% | 28.27% |
+| tp10_e70 | 273,433.60% | 614 | 56.19% | 28.50% |
+| tp15_e70 | 472,787.13% | 568 | 52.11% | 28.42% |
+| **tp20_e70** | **541,176.10%** | 538 | 49.44% | **30.75%** |
+| **tp30_e70** | **892,129.62%** | 516 | 47.29% | 34.28% (tied with control) |
+
+Same narrow-vs-wide pattern as every other symbol: `tp5`-`tp15` trade return for a cleaner win-rate/
+drawdown improvement; `tp20`/`tp30` recover (and exceed) the no-TP return while still improving win
+rate.
+
+### Start-date sensitivity: a more mixed picture than BTC/ETH/SOL
+
+| Start | control | tp20_e70 | tp30_e70 |
+|---|---|---|---|
+| 2018+ | 360,274.95% | **541,176.10%** | **892,129.62%** |
+| 2020+ | **127,119.60%** | 126,355.91% (loses, ~0.6% relative) | **212,985.10%** |
+| 2022+ | 3,392.40% | **3,775.77%** | **4,693.83%** |
+
+**`tp20_e70` is not the clean 9-of-9 winner it was on BTC/ETH/SOL - it loses narrowly to the no-TP
+control at the 2020+ start on ADA** (essentially a wash, not a meaningful loss, but the first time
+this specific config has lost anywhere in this project's start-date testing). `tp20_e70` does still
+improve win rate and max drawdown at every ADA start date tested (see raw sweep output,
+`data/sweeps/ada_4h_partial_tp_startdate.json`) - the return edge specifically is what's inconsistent
+here, not the risk profile. **`tp30_e70` wins on return at all 3 ADA start dates**, more decisively
+than `tp20_e70` does, but - unlike on BTC/ETH/SOL - its max drawdown is identical to the no-TP
+control at every ADA start date (34.28% exactly, all three), meaning the wider 30% target rarely
+fires within these windows on ADA; the return improvement is coming from what it does do, not from
+risk reduction.
+
+### Outcome
+
+**ADA is not a clean repeat of the BTC/ETH/SOL finding, but the core `rsi_m2`/`4h` signal still
+clearly beats buy-and-hold on ADA** (e.g. 2022+: control alone at +3,392% vs buy-and-hold's -74.57%).
+Of the two take-profit widths tested, `tp30_e70` is the more consistent choice for ADA specifically
+if a take-profit is used at all - wins on return at every start date - though without the drawdown
+benefit seen elsewhere. `tp20_e70` remains a defensible choice (drawdown/win-rate improve
+everywhere) if return isn't the only criterion. Neither width is invalidated, but neither is the
+unambiguous win it was on the other three symbols either - this is exactly the kind of per-symbol
+variation that's easy to miss by assuming a validated config on one asset transfers cleanly to
+another, which is why this check was worth doing before any live capital went on ADA.

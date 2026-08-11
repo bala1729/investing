@@ -464,19 +464,31 @@ class OrderExecutor:
         of that. Polled briefly (a market order fills almost immediately, but not
         always before the create call itself returns) rather than trusted after one
         read.
+
+        A `fetch_order` call can itself raise immediately after the order was
+        created - observed live: Kraken returned `OrderNotFound` for an order that
+        had, in fact, already filled, with the fetch succeeding cleanly moments
+        later. That's the same "not yet visible on this read" lag as a status still
+        showing OPEN, not a reason to give up - both are retried the same way.
         """
         fetched: dict[str, Any] | None = None
         if exchange_order_id:
-            for _ in range(3):
+            for attempt in range(3):
                 try:
                     fetched = await self._client.fetch_order(exchange_order_id, symbol)
                 except Exception:
-                    logger.exception(f"Could not fetch live order {exchange_order_id}")
                     fetched = None
-                    break
-                if _map_ccxt_status(fetched.get("status")) != OrderStatus.OPEN:
-                    break
-                await asyncio.sleep(self._retry_delay)
+                    logger.warning(
+                        f"Could not fetch live order {exchange_order_id} "
+                        f"(attempt {attempt + 1}/3) - retrying rather than giving up, "
+                        f"Kraken can briefly lag right after a fill"
+                    )
+                if fetched is not None:
+                    status = _map_ccxt_status(fetched.get("status"))
+                    if status != OrderStatus.OPEN:
+                        break
+                if attempt < 2:
+                    await asyncio.sleep(self._retry_delay)
 
         if fetched is None:
             # Accepted by Kraken but its fill status couldn't be confirmed - OPEN, not
