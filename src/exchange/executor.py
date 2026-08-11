@@ -53,6 +53,30 @@ def _extract_fee(result: dict[str, Any]) -> Decimal:
     return Decimal(str(cost)) if cost is not None else Decimal("0")
 
 
+def _map_ccxt_status(raw_status: str | None) -> OrderStatus:
+    """Translate ccxt's normalized order-status vocabulary to this codebase's OrderStatus.
+
+    Kraken's own create-order response carries no status at all - it returns only
+    `{descr, txid}` - so ccxt's parsed dict still has a "status" key, but with value
+    None. Even once a real status is available (from a follow-up fetch), ccxt spells
+    it differently: "closed" for filled, "canceled" with one L, neither of which
+    matches this enum's members directly. A raw `OrderStatus(raw_status)` construction
+    raises on both cases - caught by the retry loop this used to sit inside, which
+    would then submit a second real order for one Kraken had already accepted.
+
+    Missing or unrecognized maps to OPEN ("accepted, fill state not yet confirmed"),
+    never FAILED - treating an order Kraken has already accepted as failed is exactly
+    what caused the duplicate-order risk above.
+    """
+    mapping: dict[str | None, OrderStatus] = {
+        "open": OrderStatus.OPEN,
+        "closed": OrderStatus.FILLED,
+        "canceled": OrderStatus.CANCELLED,
+        "expired": OrderStatus.CANCELLED,
+    }
+    return mapping.get(raw_status, OrderStatus.OPEN)
+
+
 @dataclass
 class Order:
     """Order data structure."""
@@ -378,36 +402,26 @@ class OrderExecutor:
         side: OrderSide,
         amount: Decimal,
     ) -> Order:
-        """Execute a live market order with retry logic."""
+        """Place a live market order, retrying only while it is still safe to retry.
+
+        Retrying is only safe *before* Kraken has accepted the order - once a create
+        call returns an id/txid, this method never submits again, even if the
+        follow-up verification below fails. Kraken's create-order response carries no
+        fill status/amount/price/fee at all (only an id) - see _verify_live_fill()
+        for why those are read back from a follow-up fetch instead of trusted here.
+        """
         order_id = f"live_{uuid.uuid4().hex[:12]}"
         last_error: str | None = None
+        create_result: dict[str, Any] | None = None
 
         for attempt in range(self._max_retries):
             try:
-                result = await self._client.create_market_order(
+                create_result = await self._client.create_market_order(
                     symbol=symbol,
                     side=side.value,
                     amount=float(amount),
                 )
-
-                return Order(
-                    id=order_id,
-                    symbol=symbol,
-                    side=side,
-                    order_type=OrderType.MARKET,
-                    amount=amount,
-                    price=None,
-                    status=OrderStatus(result.get("status", "filled")),
-                    filled_amount=Decimal(str(result.get("filled", amount))),
-                    average_fill_price=(
-                        Decimal(str(result["average"])) if result.get("average") else None
-                    ),
-                    fee=_extract_fee(result),
-                    fee_currency=(result.get("fee") or {}).get("currency"),
-                    exchange_order_id=result.get("id"),
-                    is_paper=False,
-                )
-
+                break
             except Exception as e:
                 last_error = str(e)
                 logger.warning(
@@ -416,17 +430,114 @@ class OrderExecutor:
                 if attempt < self._max_retries - 1:
                     await asyncio.sleep(self._retry_delay * (attempt + 1))
 
-        # All retries failed
+        if create_result is None:
+            # Every attempt failed before Kraken ever accepted the order - nothing was
+            # placed, so reporting FAILED here cannot mask a real, accepted order.
+            return Order(
+                id=order_id,
+                symbol=symbol,
+                side=side,
+                order_type=OrderType.MARKET,
+                amount=amount,
+                price=None,
+                status=OrderStatus.FAILED,
+                is_paper=False,
+                error_message=last_error,
+            )
+
+        return await self._verify_live_fill(
+            order_id, symbol, side, amount, create_result.get("id")
+        )
+
+    async def _verify_live_fill(
+        self,
+        order_id: str,
+        symbol: str,
+        side: OrderSide,
+        requested_amount: Decimal,
+        exchange_order_id: str | None,
+    ) -> Order:
+        """Look up the exchange's own record of a just-accepted order; never re-submit.
+
+        Kraken's create-order response is `{descr, txid}` - no status, filled amount,
+        average price, or fee. A follow-up fetch is the only source of truth for any
+        of that. Polled briefly (a market order fills almost immediately, but not
+        always before the create call itself returns) rather than trusted after one
+        read.
+        """
+        fetched: dict[str, Any] | None = None
+        if exchange_order_id:
+            for _ in range(3):
+                try:
+                    fetched = await self._client.fetch_order(exchange_order_id, symbol)
+                except Exception:
+                    logger.exception(f"Could not fetch live order {exchange_order_id}")
+                    fetched = None
+                    break
+                if _map_ccxt_status(fetched.get("status")) != OrderStatus.OPEN:
+                    break
+                await asyncio.sleep(self._retry_delay)
+
+        if fetched is None:
+            # Accepted by Kraken but its fill status couldn't be confirmed - OPEN, not
+            # FAILED, so nothing downstream treats a real accepted order as needing a
+            # retry. Requires manual reconciliation.
+            logger.warning(
+                f"Live order {exchange_order_id} for {symbol} was accepted but its "
+                f"fill status could not be confirmed - check manually"
+            )
+            return Order(
+                id=order_id,
+                symbol=symbol,
+                side=side,
+                order_type=OrderType.MARKET,
+                amount=requested_amount,
+                price=None,
+                status=OrderStatus.OPEN,
+                exchange_order_id=exchange_order_id,
+                is_paper=False,
+            )
+
+        status = _map_ccxt_status(fetched.get("status"))
+        filled_amount = Decimal(str(fetched.get("filled") or 0))
+        fee = _extract_fee(fetched)
+        if fee == 0 and filled_amount > 0 and exchange_order_id:
+            fee = await self._fee_from_trades(symbol, exchange_order_id)
+
         return Order(
             id=order_id,
             symbol=symbol,
             side=side,
             order_type=OrderType.MARKET,
-            amount=amount,
+            amount=requested_amount,
             price=None,
-            status=OrderStatus.FAILED,
+            status=status,
+            filled_amount=filled_amount,
+            average_fill_price=(
+                Decimal(str(fetched["average"])) if fetched.get("average") else None
+            ),
+            fee=fee,
+            fee_currency=(fetched.get("fee") or {}).get("currency"),
+            exchange_order_id=exchange_order_id,
             is_paper=False,
-            error_message=last_error,
+        )
+
+    async def _fee_from_trades(self, symbol: str, exchange_order_id: str) -> Decimal:
+        """Best-effort fee recovery when a fetched order doesn't report one.
+
+        Kraken sometimes only reports the fee on the underlying trade fills, not on
+        the order itself. Best-effort: any failure here falls back to the caller's
+        existing zero, which _extract_fee already documents as "not reported," not
+        "no fee was charged."
+        """
+        try:
+            trades = await self._client.fetch_my_trades(symbol)
+        except Exception:
+            logger.exception(f"Could not fetch trades for {symbol} to recover the fee")
+            return Decimal("0")
+        return sum(
+            (_extract_fee(trade) for trade in trades if trade.get("order") == exchange_order_id),
+            Decimal("0"),
         )
 
     async def execute_limit_order(

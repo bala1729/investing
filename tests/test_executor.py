@@ -255,11 +255,13 @@ class TestOrderExecutorLiveMode:
         assert executor.is_paper_trading is False
 
     async def test_execute_market_order_success(self, kraken_client: AsyncMock) -> None:
-        kraken_client.create_market_order.return_value = {
-            "id": "ex1",
-            "status": "filled",
+        # Kraken's real create response: no status/filled/average/fee, only an id.
+        kraken_client.create_market_order.return_value = {"id": "ex1", "txid": ["ex1"]}
+        kraken_client.fetch_order.return_value = {
+            "status": "closed",  # ccxt's spelling for filled
             "filled": "0.01",
             "average": "45000",
+            "fee": {"cost": "0.05", "currency": "USD"},
         }
         executor = make_live_executor(kraken_client)
         order = await executor.execute_market_order("BTC/USD", OrderSide.BUY, Decimal("0.01"))
@@ -267,13 +269,16 @@ class TestOrderExecutorLiveMode:
         assert order.status == OrderStatus.FILLED
         assert order.exchange_order_id == "ex1"
         assert order.average_fill_price == Decimal("45000")
+        assert order.fee == Decimal("0.05")
         assert order.is_paper is False
         kraken_client.create_market_order.assert_awaited_once_with(
             symbol="BTC/USD", side="buy", amount=0.01
         )
+        kraken_client.fetch_order.assert_awaited_once_with("ex1", "BTC/USD")
 
     async def test_execute_market_order_no_average_price(self, kraken_client: AsyncMock) -> None:
-        kraken_client.create_market_order.return_value = {"id": "ex1", "status": "open"}
+        kraken_client.create_market_order.return_value = {"id": "ex1", "txid": ["ex1"]}
+        kraken_client.fetch_order.return_value = {"status": "open", "filled": "0"}
         executor = make_live_executor(kraken_client)
         order = await executor.execute_market_order("BTC/USD", OrderSide.BUY, Decimal("0.01"))
 
@@ -285,13 +290,130 @@ class TestOrderExecutorLiveMode:
     ) -> None:
         kraken_client.create_market_order.side_effect = [
             RuntimeError("network blip"),
-            {"id": "ex1", "status": "filled", "filled": "0.01"},
+            {"id": "ex1", "txid": ["ex1"]},
         ]
+        kraken_client.fetch_order.return_value = {"status": "closed", "filled": "0.01"}
         executor = make_live_executor(kraken_client)
         order = await executor.execute_market_order("BTC/USD", OrderSide.BUY, Decimal("0.01"))
 
         assert order.status == OrderStatus.FILLED
         assert kraken_client.create_market_order.await_count == 2
+
+    async def test_a_real_kraken_create_response_does_not_raise_or_retry(
+        self, kraken_client: AsyncMock
+    ) -> None:
+        """Regression: Kraken's create-order response has no status field at all, and
+        ccxt's parsed dict still carries a "status" key with value None. The old code
+        (`OrderStatus(result.get("status", "filled"))`) raised on this - the key being
+        *present* with value None meant `.get`'s fallback never applied - and the
+        surrounding retry loop then placed a second real order for one Kraken had
+        already accepted.
+        """
+        kraken_client.create_market_order.return_value = {
+            "id": "ex1",
+            "txid": ["ex1"],
+            "status": None,
+        }
+        kraken_client.fetch_order.return_value = {
+            "status": "closed",
+            "filled": "0.01",
+            "average": "45000",
+        }
+        executor = make_live_executor(kraken_client)
+
+        order = await executor.execute_market_order("BTC/USD", OrderSide.BUY, Decimal("0.01"))
+
+        assert order.status == OrderStatus.FILLED
+        assert kraken_client.create_market_order.await_count == 1  # never retried
+
+    async def test_ccxt_cancelled_spelling_maps_correctly(self, kraken_client: AsyncMock) -> None:
+        """ccxt spells it "canceled" (one L); this codebase spells it "cancelled" (two)."""
+        kraken_client.create_market_order.return_value = {"id": "ex1", "txid": ["ex1"]}
+        kraken_client.fetch_order.return_value = {"status": "canceled", "filled": "0"}
+        executor = make_live_executor(kraken_client)
+
+        order = await executor.execute_market_order("BTC/USD", OrderSide.BUY, Decimal("0.01"))
+
+        assert order.status == OrderStatus.CANCELLED
+
+    async def test_fetched_status_still_open_polls_before_giving_up(
+        self, kraken_client: AsyncMock
+    ) -> None:
+        kraken_client.create_market_order.return_value = {"id": "ex1", "txid": ["ex1"]}
+        kraken_client.fetch_order.side_effect = [
+            {"status": "open", "filled": "0"},
+            {"status": "closed", "filled": "0.01", "average": "45000"},
+        ]
+        executor = make_live_executor(kraken_client)
+
+        order = await executor.execute_market_order("BTC/USD", OrderSide.BUY, Decimal("0.01"))
+
+        assert order.status == OrderStatus.FILLED
+        assert kraken_client.fetch_order.await_count == 2
+        kraken_client.create_market_order.assert_awaited_once()  # still never retried
+
+    async def test_unconfirmable_fill_status_reports_open_not_failed(
+        self, kraken_client: AsyncMock
+    ) -> None:
+        """A real order Kraken accepted must never come back FAILED - that would read as
+        safe to retry when a real order already exists."""
+        kraken_client.create_market_order.return_value = {"id": "ex1", "txid": ["ex1"]}
+        kraken_client.fetch_order.side_effect = RuntimeError("network blip")
+        executor = make_live_executor(kraken_client)
+
+        order = await executor.execute_market_order("BTC/USD", OrderSide.BUY, Decimal("0.01"))
+
+        assert order.status == OrderStatus.OPEN
+        assert order.exchange_order_id == "ex1"
+        assert kraken_client.create_market_order.await_count == 1
+
+    async def test_fee_falls_back_to_trades_when_the_order_does_not_report_one(
+        self, kraken_client: AsyncMock
+    ) -> None:
+        kraken_client.create_market_order.return_value = {"id": "ex1", "txid": ["ex1"]}
+        kraken_client.fetch_order.return_value = {
+            "status": "closed",
+            "filled": "0.01",
+            "average": "45000",
+            # no "fee" key - Kraken doesn't always report it on the order itself
+        }
+        kraken_client.fetch_my_trades.return_value = [
+            {"order": "ex1", "fee": {"cost": "0.03", "currency": "USD"}},
+            {"order": "other-order", "fee": {"cost": "99", "currency": "USD"}},
+        ]
+        executor = make_live_executor(kraken_client)
+
+        order = await executor.execute_market_order("BTC/USD", OrderSide.BUY, Decimal("0.01"))
+
+        assert order.fee == Decimal("0.03")  # only the matching order's trade, not "other-order"
+
+    async def test_fee_recovery_failure_falls_back_to_zero(self, kraken_client: AsyncMock) -> None:
+        kraken_client.create_market_order.return_value = {"id": "ex1", "txid": ["ex1"]}
+        kraken_client.fetch_order.return_value = {
+            "status": "closed",
+            "filled": "0.01",
+            "average": "45000",
+        }
+        kraken_client.fetch_my_trades.side_effect = RuntimeError("down")
+        executor = make_live_executor(kraken_client)
+
+        order = await executor.execute_market_order("BTC/USD", OrderSide.BUY, Decimal("0.01"))
+
+        assert order.status == OrderStatus.FILLED  # the fill itself is still reported
+        assert order.fee == Decimal("0")
+
+    async def test_no_exchange_order_id_still_reports_open_not_failed(
+        self, kraken_client: AsyncMock
+    ) -> None:
+        """Create succeeded (no exception) but returned no id to fetch a fill for."""
+        kraken_client.create_market_order.return_value = {}
+        executor = make_live_executor(kraken_client)
+
+        order = await executor.execute_market_order("BTC/USD", OrderSide.BUY, Decimal("0.01"))
+
+        assert order.status == OrderStatus.OPEN
+        assert order.exchange_order_id is None
+        kraken_client.fetch_order.assert_not_awaited()
 
     async def test_execute_market_order_all_retries_fail(self, kraken_client: AsyncMock) -> None:
         kraken_client.create_market_order.side_effect = RuntimeError("down")
