@@ -1,0 +1,10 @@
+[
+ {"arm": "control_no_tp", "strategy": "rsi_m2", "timeframe": "4h",
+  "windows": ["2018+", "2020+", "2022+"]},
+ {"arm": "tp20_e70", "strategy": "rsi_m2", "timeframe": "4h",
+  "windows": ["2018+", "2020+", "2022+"],
+  "stops": {"target": 20, "target_exit_pct": 70}},
+ {"arm": "tp30_e70", "strategy": "rsi_m2", "timeframe": "4h",
+  "windows": ["2018+", "2020+", "2022+"],
+  "stops": {"target": 30, "target_exit_pct": 70}}
+]

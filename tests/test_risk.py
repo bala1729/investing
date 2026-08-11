@@ -16,6 +16,7 @@ def make_settings(
     max_drawdown_pct: float = 10.0,
     default_stop_loss_pct: float = 2.0,
     max_open_positions: int = 5,
+    take_profit_pct: float = 0.0,
 ) -> Settings:
     return Settings(
         _env_file=None,
@@ -24,6 +25,7 @@ def make_settings(
         max_drawdown_pct=max_drawdown_pct,
         default_stop_loss_pct=default_stop_loss_pct,
         max_open_positions=max_open_positions,
+        take_profit_pct=take_profit_pct,
     )
 
 
@@ -175,6 +177,25 @@ class TestCalculateTakeProfitPrice:
         manager = RiskManager(make_settings())
         with pytest.raises(ValueError, match="risk_reward_ratio"):
             manager.calculate_take_profit_price(Decimal("50000"), risk_reward_ratio=Decimal("0"))
+
+    def test_flat_pct_overrides_the_ratio_based_calc(self) -> None:
+        manager = RiskManager(
+            make_settings(default_stop_loss_pct=2.0, take_profit_pct=20.0),
+            risk_reward_ratio=Decimal("2"),
+        )
+        take_profit = manager.calculate_take_profit_price(Decimal("100"))
+        assert take_profit == Decimal("120")  # flat 20%, not 100 * (1 + 0.02*2) = 104
+
+    def test_explicit_ratio_override_still_wins_over_flat_pct(self) -> None:
+        """An explicit argument beats a settings-derived default, same as everywhere else here."""
+        manager = RiskManager(
+            make_settings(default_stop_loss_pct=2.0, take_profit_pct=20.0),
+            risk_reward_ratio=Decimal("2"),
+        )
+        take_profit = manager.calculate_take_profit_price(
+            Decimal("100"), risk_reward_ratio=Decimal("3")
+        )
+        assert take_profit == Decimal("106")  # 100 * (1 + 0.02*3), flat_pct ignored
 
 
 class TestIsDrawdownBreached:

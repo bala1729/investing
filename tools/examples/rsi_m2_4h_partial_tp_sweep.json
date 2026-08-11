@@ -1,0 +1,19 @@
+[
+ {"arm": "control_no_tp", "strategy": "rsi_m2", "timeframe": "4h",
+  "windows": ["2022", "2023", "2024", "2025", "full"]},
+ {"arm": "tp5_e70", "strategy": "rsi_m2", "timeframe": "4h",
+  "windows": ["2022", "2023", "2024", "2025", "full"],
+  "stops": {"target": 5, "target_exit_pct": 70}},
+ {"arm": "tp10_e70", "strategy": "rsi_m2", "timeframe": "4h",
+  "windows": ["2022", "2023", "2024", "2025", "full"],
+  "stops": {"target": 10, "target_exit_pct": 70}},
+ {"arm": "tp15_e70", "strategy": "rsi_m2", "timeframe": "4h",
+  "windows": ["2022", "2023", "2024", "2025", "full"],
+  "stops": {"target": 15, "target_exit_pct": 70}},
+ {"arm": "tp20_e70", "strategy": "rsi_m2", "timeframe": "4h",
+  "windows": ["2022", "2023", "2024", "2025", "full"],
+  "stops": {"target": 20, "target_exit_pct": 70}},
+ {"arm": "tp30_e70", "strategy": "rsi_m2", "timeframe": "4h",
+  "windows": ["2022", "2023", "2024", "2025", "full"],
+  "stops": {"target": 30, "target_exit_pct": 70}}
+]

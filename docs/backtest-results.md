@@ -1289,3 +1289,177 @@ stronger than it was a week ago: it's the first to survive the start-date check 
 tested. Raises confidence in the *entry logic*; does not by itself clear the bot for live trading -
 the live order-execution path (`OrderExecutor` against Kraken, not the paper simulator) has never
 placed a real order and this sweep says nothing about it.
+
+---
+
+## 2026-08-10 (continued) — Partial-position exits: infrastructure, not a strategy result
+
+**What landed.** Every SELL in this codebase used to close 100% of a position, everywhere -
+`Signal`, the live `TradingEngine`, and `Backtester`. Added the ability to close a fraction instead,
+from two independent places: a strategy's own signal (`Signal.exit_fraction`, 0-1, default 1.0) and
+the engine-level take-profit/stop-loss mechanism (`Backtester`'s new `take_profit_exit_pct`/
+`stop_loss_exit_pct` constructor params, 0-100, default 100). Both single-shot even when partial - a
+fired level clears immediately rather than re-firing on every later bar the price lingers past it,
+which would otherwise ladder the remainder down to dust. Full design rationale in the plan this
+session produced; not repeated here.
+
+**Default behavior verified byte-for-byte unchanged**, not just by inspection: ran `rsi_m2` `4h`
+SOL/USD 2018+ through `scripts/backtest.py` on the code before and after this change (`git stash`
+before/after) - both produced the exact same 137,424.35% return, 621 trades, $4,045,300.53 in fees.
+
+**Demonstration run** (not a strategy recommendation - one config, one symbol, no start-date check
+run against it): same config with `--take-profit-pct 15 --take-profit-exit-pct 70` (bank 70% of the
+position once price is +15% from entry, let the rest ride under the strategy's own exit).
+
+| | No take-profit (baseline) | 15% target, 70% partial exit |
+|---|---|---|
+| Return | 137,424.35% | 104,199.24% |
+| Closed trades | 310 | 359 |
+| Win rate | 49.68% | 56.55% |
+| Max drawdown | 27.63% | 22.43% |
+| Fees | $4,045,300.53 | $3,122,227.22 |
+
+**Same signature as the 2026-08-05 stop-loss finding: win rate up, drawdown down, total return
+down.** Banking part of a winner early converts some of the strategy's biggest compounding moves
+into smaller, earlier-realized ones - exactly what "let a fraction ride" should do, and exactly why
+that entry called a win-rate improvement alongside a return decline "the signature of truncating
+winners" rather than a free win. Whether that trade (lower ceiling, lower drawdown) is worth taking
+is a strategy question for a future session, not something this one demonstration run settles.
+
+**Outcome:** shipped as opt-in infrastructure (default 100% preserves every existing result).
+`RiskManager` and live take-profit enforcement (which does not exist today even at 100%) were
+explicitly left untouched - this pass only builds the plumbing to close a fraction, not a new
+strategy or tiered-target system on top of it.
+
+---
+
+## 2026-08-10 (continued 2) — `rsi_m2` `4h` SOL/USD partial-take-profit sweep: wide targets beat the no-TP baseline on every metric
+
+**What was tested.** `rsi_m2` (the live bots' config), `4h`, SOL/USD only, take-profit target width
+swept at 5/10/15/20/30% with a fixed 70% partial exit at each, against a `control_no_tp` arm
+reproducing the exact 2026-08-10 baseline (135,437.78%, 311 closed - confirmed matching before
+trusting anything else here). `tools/sweep.py` gained two new `stops` keys this session
+(`target_exit_pct`/`stop_exit_pct`) wired straight to the new `Backtester` params, so this sweep also
+served as the first real usage of the partial-exit infrastructure added earlier today. Config:
+`tools/examples/rsi_m2_4h_partial_tp_sweep.json`, followed by a start-date check on the two
+strongest arms: `tools/examples/rsi_m2_4h_partial_tp_startdate.json`.
+
+### Full-history and the widest, most skeptical start-date window
+
+| Arm | Full-history return | Full closed | Full win% | Full maxDD | 2022+ return | 2022+ maxDD |
+|---|---|---|---|---|---|---|
+| control (no TP) | 135,437.78% | 311 | 49.52% | 27.63% | 25,136.55% | 27.63% |
+| tp5, 70% exit | 20,413.59% | 468 | 67.74% | 18.25% | - | - |
+| tp10, 70% exit | 58,253.57% | 399 | 60.90% | 22.51% | - | - |
+| tp15, 70% exit | 102,692.62% | 360 | 56.39% | 22.43% | - | - |
+| **tp20, 70% exit** | **165,282.50%** | 342 | 54.39% | **22.36%** | **33,991.35%** | **22.36%** |
+| tp30, 70% exit | 169,871.93% | 323 | 51.39% | 24.63% | 29,847.93% | 24.63% |
+
+**Narrow targets (5-15%) behave exactly like the 2026-08-05 stop-loss finding** - win rate up
+sharply, drawdown down, but total return well below the no-TP baseline. Banking 70% of the position
+every time a modest move happens converts big compounding winners into small realized ones, same
+mechanism as before.
+
+**Wide targets (20-30%) break that pattern - `tp20_e70` beats the no-TP baseline on every metric at
+once, in the full-history window and independently at every start date tested (2018+/2020+/2022+
+all show the same ranking).** Not just a full-history compounding artifact: at 2022+, the window this
+project's start-date check has burned four separate times, `tp20_e70` still shows +33,991% vs
+control's +25,136%, 53.82% win rate vs 49.64%, and 22.36% maxDD vs 27.63%. Per-year detail (full
+window) tells the same story - `tp20_e70` beats or matches control's return in 3 of 4 years (loses
+only in 2025: 265.34% vs 313.44%) and **improves max drawdown in all 4 years without exception**
+(e.g. 2023: 22.36% vs 27.63%). `tp30_e70` is even more conservative: in years the wide target never
+triggers (2022, 2024) its numbers are identical to control by construction; in years it does trigger
+(2023, 2025) every metric improves or ties.
+
+**Why wide beats narrow here, tentatively:** a target set far enough out fires rarely, so most of the
+time this is just the unmodified `rsi_m2` baseline - the 70% partial exit only intervenes on the
+minority of trades that run unusually hard, banking some of an outsized move rather than truncating
+an ordinary one the way a tight target does on nearly every trade. That is a hypothesis from the
+shape of the data (trade counts stay close to baseline: 342/323 vs 311, versus 468 at `tp5`), not a
+mechanism verified independently here.
+
+### Caveats
+
+1. **One symbol (SOL/USD), one strategy config (`rsi_m2`), one timeframe (`4h`).** Everything else
+   tested today for the partial-take-profit feature was SOL-only; BTC/ETH are untested with this
+   exact target-width sweep.
+2. **These are full-balance, all-in/all-out compounding figures** - same caveat as every number in
+   this file. Read "beats the baseline on return, win rate, and drawdown simultaneously, and does so
+   at every start date" as the finding, not the six-figure percentages themselves.
+3. **Not yet live-actionable.** Live take-profit enforcement (fractional or not) still does not
+   exist in `TradingEngine`/`enforce_stops()` - this is a backtest-only result until that's built.
+
+### Outcome (superseded by the cross-symbol extension immediately below)
+
+Not shipped to the live bots (no live enforcement exists yet to ship it to). Worth extending this
+exact sweep to BTC/ETH before treating "≈20-30% target, 70% exit" as a real recommendation rather
+than a promising SOL-only result. See the next entry - that extension is now done.
+
+---
+
+## 2026-08-10 (continued 3) — Same partial-take-profit sweep extended to BTC and ETH: `tp20_e70` holds up on all three symbols
+
+**What was tested.** The exact same sweep as immediately above (`rsi_m2`, `4h`, target width
+5/10/15/20/30% at a fixed 70% partial exit, control arm with no take-profit), run against the
+default three-symbol set instead of SOL-only. Same two config files
+(`tools/examples/rsi_m2_4h_partial_tp_sweep.json`,
+`tools/examples/rsi_m2_4h_partial_tp_startdate.json`), just without the `SWEEP_SYMBOLS` override.
+
+### Full-history, all three symbols
+
+| Symbol | Arm | Return | Closed | Win% | MaxDD |
+|---|---|---|---|---|---|
+| BTC/USD | control (no TP) | 968,952.41% | 879 | 42.32% | 27.04% |
+| BTC/USD | **tp20_e70** | **1,498,194.58%** | 913 | 44.58% | **25.05%** |
+| BTC/USD | tp30_e70 | 1,319,788.25% | 888 | 42.91% | 27.04% |
+| ETH/USD | control (no TP) | 12,703,157.69% | 735 | 44.90% | 36.25% |
+| ETH/USD | **tp20_e70** | **14,363,277.16%** | 791 | 48.93% | **29.35%** |
+| ETH/USD | tp30_e70 | 13,982,677.24% | 756 | 46.43% | 29.92% |
+| SOL/USD | control (no TP) | 135,437.78% | 311 | 49.52% | 27.63% |
+| SOL/USD | **tp20_e70** | **165,282.50%** | 342 | 54.39% | **22.36%** |
+| SOL/USD | tp30_e70 | 169,871.93% | 323 | 51.39% | 24.63% |
+
+**`tp20_e70` beats the no-take-profit control on return, win rate, AND max drawdown, on all three
+symbols at once.** Not a SOL-only artifact.
+
+### Start-date sensitivity: `tp20_e70` wins in 9 of 9 cells
+
+| Symbol | Start | control (no TP) | tp20_e70 | tp30_e70 |
+|---|---|---|---|---|
+| BTC/USD | 2018+ | 7,789.41% | **11,210.59%** | 8,579.40% |
+| BTC/USD | 2020+ | 2,041.90% | **2,327.31%** | 2,228.03% |
+| BTC/USD | 2022+ | 328.25% | **350.74%** | 328.25% (tied - never triggered) |
+| ETH/USD | 2018+ | 38,544.99% | **78,543.13%** | 58,386.24% |
+| ETH/USD | 2020+ | 11,384.59% | **15,085.86%** | 12,425.55% |
+| ETH/USD | 2022+ | 519.49% | **554.86%** | 509.37% (tp30 loses here) |
+| SOL/USD | 2018+/2020+ | 135,437.78% | **165,282.50%** | 169,871.93% |
+| SOL/USD | 2022+ | 25,136.55% | **33,991.35%** | 29,847.93% |
+
+**`tp20_e70` beats the no-take-profit control at every single one of the 9 symbol/start-date
+cells.** `tp30_e70` is close behind but loses once (ETH 2022+, a small -2% relative miss) - `tp20`
+is the more robust of the two widths tested.
+
+### The honest nuance: drawdown protection is not uniform across windows
+
+At the tighter, more recent **2022+** window specifically, BTC and ETH's max drawdown was
+**identical** between control and both take-profit arms (BTC 24.93% vs 24.93%; ETH 26.88% vs
+26.88%) - only return and win rate improved there, not drawdown. The drawdown reduction shows up
+clearly in the **full-history** numbers (which include the 2018 and 2022 crashes) but not
+necessarily in every shorter recent window. SOL is the exception - it improved drawdown even at
+2022+ (27.63% -> 22.36%). Read "improves all three metrics" as a full-history-and-usually,
+not an always-every-window, result.
+
+**Per-year detail is also more mixed for ETH than for SOL/BTC** (see the raw sweep output,
+`data/sweeps/rsi_m2_4h_partial_tp_sweep_all.json`) - `tp20_e70` loses to control in 2 of ETH's 4
+individual years even though it wins on every multi-year and start-date cut. The multi-year
+robustness is the finding; a single calendar year is too short a sample to expect a clean sweep.
+
+### Outcome
+
+**This is now a three-symbol, start-date-robust result**, not a SOL-only curiosity - the strongest
+backtested case in this project's history for an engine-level protective mechanism improving
+return, win rate, and (mostly) drawdown together rather than trading one for another. Still not
+live-actionable: live take-profit enforcement does not exist in `TradingEngine` at any fraction, so
+this remains backtest-only until that's built. If pursued further: build live take-profit
+enforcement (the natural next step now that the backtest case is this robust), and consider running
+the same width sweep on `1h`/`1d` to see if the effect is timeframe-specific to `4h`.

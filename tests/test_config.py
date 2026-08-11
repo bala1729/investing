@@ -3,6 +3,8 @@
 import os
 from unittest.mock import patch
 
+import pytest
+
 from src.config import Settings, TradingMode, get_settings
 
 
@@ -35,6 +37,9 @@ class TestSettings:
         assert settings.default_stop_loss_pct == 2.0
         assert settings.max_open_positions == 5
         assert settings.log_level == "INFO"
+        assert settings.take_profit_pct == 0.0
+        assert settings.take_profit_exit_pct == 100.0
+        assert settings.take_profit_enforcement is False
 
     def test_is_paper_trading_true(self) -> None:
         """Test is_paper_trading returns True for paper mode."""
@@ -72,6 +77,35 @@ class TestSettings:
         assert settings.risk_per_trade_pct == 2.0
         assert settings.max_position_size_pct == 10.0
         assert settings.max_open_positions == 3
+
+
+class TestTakeProfitValidation:
+    def test_rejects_negative_take_profit_pct(self) -> None:
+        with pytest.raises(ValueError, match="take_profit_pct cannot be negative"):
+            Settings(_env_file=None, take_profit_pct=-1.0)
+
+    def test_rejects_zero_take_profit_exit_pct(self) -> None:
+        with pytest.raises(ValueError, match="take_profit_exit_pct must be between"):
+            Settings(_env_file=None, take_profit_exit_pct=0.0)
+
+    def test_rejects_take_profit_exit_pct_over_100(self) -> None:
+        with pytest.raises(ValueError, match="take_profit_exit_pct must be between"):
+            Settings(_env_file=None, take_profit_exit_pct=101.0)
+
+    def test_accepts_take_profit_exit_pct_at_100(self) -> None:
+        settings = Settings(_env_file=None, take_profit_exit_pct=100.0)
+        assert settings.take_profit_exit_pct == 100.0
+
+    def test_accepts_a_valid_flat_target(self) -> None:
+        settings = Settings(
+            _env_file=None,
+            take_profit_pct=20.0,
+            take_profit_exit_pct=70.0,
+            take_profit_enforcement=True,
+        )
+        assert settings.take_profit_pct == 20.0
+        assert settings.take_profit_exit_pct == 70.0
+        assert settings.take_profit_enforcement is True
 
 
 class TestGetSettings:

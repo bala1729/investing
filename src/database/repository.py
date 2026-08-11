@@ -341,6 +341,49 @@ class PositionRepository:
             return position
         return None
 
+    async def reduce_position(
+        self,
+        symbol: str,
+        sold_amount: Decimal,
+        exit_price: Decimal,
+        clear_stop_loss: bool = False,
+        clear_take_profit: bool = False,
+    ) -> Position | None:
+        """Close part of a position, leaving entry price and stops in place for the remainder.
+
+        Unlike close_position(), this leaves entry_price/stop_loss/take_profit
+        untouched by default - the remaining amount is still the same position,
+        still protected by whatever the risk manager set at entry, not a fresh
+        one. realized_pnl accumulates rather than being overwritten, since a
+        position can be reduced more than once over its life.
+
+        `clear_stop_loss`/`clear_take_profit` null the corresponding column
+        instead. Only pass these for a reduction *triggered by that level
+        itself* (a stop-loss or take-profit hit) - never for a strategy's own
+        partial exit, which is unrelated to either level and must leave both
+        alone. Without clearing the level that just fired, the next check
+        would still see price past it and fire again on the remainder, then
+        again on what's left of that - the same single-shot guard Backtester
+        already applies to protective exits, reproduced here for the live
+        path.
+        """
+        position = await self.get_by_symbol(symbol)
+        if position:
+            if position.side == "long":
+                pnl = (exit_price - position.entry_price) * sold_amount
+            else:
+                pnl = (position.entry_price - exit_price) * sold_amount
+
+            position.realized_pnl += pnl
+            position.amount -= sold_amount
+            position.current_price = exit_price
+            if clear_stop_loss:
+                position.stop_loss = None
+            if clear_take_profit:
+                position.take_profit = None
+            return position
+        return None
+
     async def delete(self, symbol: str) -> None:
         """Delete a position."""
         await self._session.execute(

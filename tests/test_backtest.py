@@ -53,8 +53,14 @@ def buy(reason: str = "go long") -> Signal:
     return Signal(symbol="BTC/USD", side=OrderSide.BUY, strategy="scripted", reason=reason)
 
 
-def sell(reason: str = "go flat") -> Signal:
-    return Signal(symbol="BTC/USD", side=OrderSide.SELL, strategy="scripted", reason=reason)
+def sell(reason: str = "go flat", exit_fraction: float = 1.0) -> Signal:
+    return Signal(
+        symbol="BTC/USD",
+        side=OrderSide.SELL,
+        strategy="scripted",
+        reason=reason,
+        exit_fraction=exit_fraction,
+    )
 
 
 def make_candles(opens: list[float], closes: list[float] | None = None) -> pd.DataFrame:
@@ -639,3 +645,155 @@ class TestBacktesterStops:
     def test_rejects_negative_trailing_percentages(self) -> None:
         with pytest.raises(ValueError, match="trailing stop percentages cannot be negative"):
             Backtester(ScriptedStrategy({}), "BTC/USD", trailing_lock_pct=Decimal("-1"))
+
+    def test_rejects_out_of_range_take_profit_exit_pct(self) -> None:
+        with pytest.raises(ValueError, match="take_profit_exit_pct must be between"):
+            Backtester(ScriptedStrategy({}), "BTC/USD", take_profit_exit_pct=Decimal("0"))
+        with pytest.raises(ValueError, match="take_profit_exit_pct must be between"):
+            Backtester(ScriptedStrategy({}), "BTC/USD", take_profit_exit_pct=Decimal("101"))
+
+    def test_rejects_out_of_range_stop_loss_exit_pct(self) -> None:
+        with pytest.raises(ValueError, match="stop_loss_exit_pct must be between"):
+            Backtester(ScriptedStrategy({}), "BTC/USD", stop_loss_exit_pct=Decimal("0"))
+        with pytest.raises(ValueError, match="stop_loss_exit_pct must be between"):
+            Backtester(ScriptedStrategy({}), "BTC/USD", stop_loss_exit_pct=Decimal("101"))
+
+
+class TestBacktesterPartialExits:
+    """Fractional exits: a strategy's own Signal.exit_fraction, and the engine-level
+    take_profit_exit_pct/stop_loss_exit_pct - "close X% of the position, let the rest ride."
+    """
+
+    def test_partial_take_profit_leaves_a_rideable_remainder(self) -> None:
+        # entry fills at bar1 open=100 (target 4% above = 104); bar2's high reaches
+        # it and closes 70%; the scripted strategy then sells the remainder at bar3.
+        candles = ohlc_candles(
+            [
+                (100, 100, 100, 100),
+                (100, 100, 100, 100),
+                (100, 105, 100, 105),
+                (104, 104, 104, 104),
+            ]
+        )
+        result = Backtester(
+            ScriptedStrategy({0: buy(), 2: sell("close remainder")}),
+            "BTC/USD",
+            starting_balance=Decimal("1000"),
+            take_profit_pct=Decimal("4"),
+            take_profit_exit_pct=Decimal("70"),
+        ).run(candles)
+
+        buys = [t for t in result.trades if t.side == OrderSide.BUY]
+        sells = [t for t in result.trades if t.side == OrderSide.SELL]
+        assert len(buys) == 1
+        assert len(sells) == 2
+
+        bought_amount = buys[0].amount
+        take_profit_exit, remainder_exit = sells
+        assert "Take-profit hit" in take_profit_exit.reason
+        assert take_profit_exit.price == Decimal("104")
+        assert take_profit_exit.amount == bought_amount * Decimal("0.7")
+
+        assert remainder_exit.price == Decimal("104")
+        assert remainder_exit.amount == bought_amount * Decimal("0.3")
+        # pnl on each fill is computed off that fill's own slice, not the whole
+        # original position - together they equal a full exit at 104 for 10 units.
+        assert take_profit_exit.pnl == Decimal("28")  # (104-100) * 7.0
+        assert remainder_exit.pnl == Decimal("12")  # (104-100) * 3.0
+
+    def test_partial_take_profit_target_is_single_shot(self) -> None:
+        """A price that lingers above the target must not re-fire it every bar."""
+        candles = ohlc_candles(
+            [
+                (100, 100, 100, 100),
+                (100, 100, 100, 100),
+                (100, 110, 100, 110),  # fires the partial take-profit
+                (110, 110, 105, 110),  # still above the target level - must not re-fire
+                (110, 110, 105, 110),
+            ]
+        )
+        result = Backtester(
+            ScriptedStrategy({0: buy()}),
+            "BTC/USD",
+            starting_balance=Decimal("1000"),
+            take_profit_pct=Decimal("4"),
+            take_profit_exit_pct=Decimal("70"),
+        ).run(candles)
+
+        take_profit_exits = [t for t in result.trades if "Take-profit hit" in t.reason]
+        assert len(take_profit_exits) == 1
+
+        # 1000 / 100 = 10 bought; 70% (7.0) sold at the 104 target, proceeds 728.
+        # The un-sold 30% (3.0) rides and is marked at the final bar's close (110).
+        assert result.ending_balance == Decimal("728") + Decimal("3") * Decimal("110")
+
+    def test_partial_stop_loss_leaves_a_remainder_and_clears_only_the_stop(self) -> None:
+        candles = ohlc_candles(
+            [
+                (100, 100, 100, 100),
+                (100, 101, 100, 101),  # entry fills here at 100
+                (101, 101, 97, 97),    # stop (98) breaches - closes 60%
+                (97, 97, 97, 97),      # stop is cleared - no second auto-exit here
+            ]
+        )
+        result = Backtester(
+            ScriptedStrategy({0: buy()}),
+            "BTC/USD",
+            starting_balance=Decimal("1000"),
+            stop_loss_pct=Decimal("2"),
+            stop_loss_exit_pct=Decimal("60"),
+        ).run(candles)
+
+        buys = [t for t in result.trades if t.side == OrderSide.BUY]
+        sells = [t for t in result.trades if t.side == OrderSide.SELL]
+        assert len(sells) == 1  # single-shot: no re-fire on the next bar's dip
+        assert "Stop-loss hit" in sells[0].reason
+        assert sells[0].amount == buys[0].amount * Decimal("0.6")
+
+    def test_strategy_exit_fraction_leaves_stop_and_target_intact(self) -> None:
+        """A strategy-driven partial exit is independent of the constructor's
+        take_profit_exit_pct/stop_loss_exit_pct - the remainder keeps its levels."""
+        candles = ohlc_candles(
+            [
+                (100, 100, 100, 100),
+                (100, 100, 100, 100),   # entry at 100 (stop 98, target 110)
+                (100, 100, 100, 100),   # strategy sells 40% here
+                (100, 100, 100, 100),
+                (100, 100, 96, 100),    # stop (98) still armed - catches the remainder
+            ]
+        )
+        result = Backtester(
+            ScriptedStrategy({0: buy(), 1: sell("scale out", exit_fraction=0.4)}),
+            "BTC/USD",
+            starting_balance=Decimal("1000"),
+            stop_loss_pct=Decimal("2"),
+            take_profit_pct=Decimal("10"),
+        ).run(candles)
+
+        sells = [t for t in result.trades if t.side == OrderSide.SELL]
+        assert len(sells) == 2
+        strategy_exit, stop_exit = sells
+        assert "scale out" in strategy_exit.reason
+        assert strategy_exit.amount == result.trades[0].amount * Decimal("0.4")
+        # The stop that protected the original position still catches the
+        # 60% remainder - it was never touched by the strategy's own exit.
+        assert "Stop-loss hit" in stop_exit.reason
+        assert stop_exit.price == Decimal("98")
+        assert stop_exit.amount == result.trades[0].amount * Decimal("0.6")
+
+    def test_default_exit_pcts_are_full_exits(self) -> None:
+        """The new params must default to today's behavior - single full-size sells."""
+        candles = ohlc_candles(
+            [(100, 100, 100, 100), (100, 101, 100, 101), (101, 105, 101, 104)]
+        )
+        result = Backtester(
+            ScriptedStrategy({0: buy()}),
+            "BTC/USD",
+            starting_balance=Decimal("1000"),
+            take_profit_pct=Decimal("4"),
+        ).run(candles)
+
+        buys = [t for t in result.trades if t.side == OrderSide.BUY]
+        sells = [t for t in result.trades if t.side == OrderSide.SELL]
+        assert len(sells) == 1
+        assert sells[0].amount == buys[0].amount

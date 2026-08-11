@@ -201,6 +201,22 @@ def parse_args() -> argparse.Namespace:
         "stop: the stop moves once and then holds.",
     )
     parser.add_argument(
+        "--stop-loss-exit-pct",
+        type=Decimal,
+        default=Decimal("100"),
+        help="Percent of the position a stop-loss hit closes. 100 (default) is a full exit, "
+        "matching every result logged before partial exits existed. Fires single-shot even "
+        "when partial - the stop clears once triggered rather than re-firing every bar.",
+    )
+    parser.add_argument(
+        "--take-profit-exit-pct",
+        type=Decimal,
+        default=Decimal("100"),
+        help="Percent of the position a take-profit hit closes. 100 (default) is a full exit. "
+        "Set below 100 to bank part of the position at the target and let the rest ride under "
+        "the strategy's own exit. Fires single-shot, same as --stop-loss-exit-pct.",
+    )
+    parser.add_argument(
         "--slippage-pct",
         type=Decimal,
         default=Decimal("0.05"),
@@ -344,6 +360,8 @@ async def main() -> None:
         take_profit_pct=args.take_profit_pct,
         trailing_trigger_pct=args.trailing_trigger_pct,
         trailing_lock_pct=args.trailing_lock_pct,
+        stop_loss_exit_pct=args.stop_loss_exit_pct,
+        take_profit_exit_pct=args.take_profit_exit_pct,
     )
     result = backtester.run(candles, higher_tf_candles=higher_tf_candles)
 

@@ -122,6 +122,22 @@ class Backtester:
     Both default to 0 so the engine's own default behavior is fee-free/frictionless;
     scripts/backtest.py defaults to realistic non-zero values since that's the
     tool actually used to judge a strategy.
+
+    `stop_loss_exit_pct` and `take_profit_exit_pct` control how much of the
+    position each protective level closes when it fires (default 100 - a full
+    exit, unchanged from before these existed). Both fire single-shot even when
+    partial: whichever level triggers is cleared afterward regardless of
+    fraction, so a price that lingers past a level cannot re-trigger it on every
+    following bar and ladder the remainder down to dust. A strategy can request
+    its own partial exit independently via `Signal.exit_fraction` on a SELL -
+    the two mechanisms never collide within a bar, since a fired protective
+    level always clears `pending_signal` before the strategy-signal branch runs.
+
+    Fractional exits change what a trade count and win rate mean: each partial
+    fill records its own pnl and counts as a closed trade, so a strategy that
+    scales out of one logical position reports more, smaller closed trades than
+    the same strategy exiting all at once. Not a bug, but not directly
+    comparable to a 100%-exit run's trade count.
     """
 
     def __init__(
@@ -136,6 +152,8 @@ class Backtester:
         take_profit_pct: Decimal = Decimal("0"),
         trailing_trigger_pct: Decimal = Decimal("0"),
         trailing_lock_pct: Decimal = Decimal("0"),
+        stop_loss_exit_pct: Decimal = Decimal("100"),
+        take_profit_exit_pct: Decimal = Decimal("100"),
     ) -> None:
         if not (Decimal("0") < position_size_pct <= Decimal("100")):
             raise ValueError("position_size_pct must be between 0 (exclusive) and 100")
@@ -153,6 +171,10 @@ class Backtester:
             raise ValueError("trailing_lock_pct must be below trailing_trigger_pct")
         if trailing_trigger_pct > 0 and stop_loss_pct == 0:
             raise ValueError("a trailing stop needs stop_loss_pct set to have a stop to raise")
+        if not (Decimal("0") < stop_loss_exit_pct <= Decimal("100")):
+            raise ValueError("stop_loss_exit_pct must be between 0 (exclusive) and 100")
+        if not (Decimal("0") < take_profit_exit_pct <= Decimal("100")):
+            raise ValueError("take_profit_exit_pct must be between 0 (exclusive) and 100")
         self._strategy = strategy
         self._symbol = symbol
         self._starting_balance = starting_balance
@@ -163,6 +185,8 @@ class Backtester:
         self._take_profit_pct = take_profit_pct
         self._trailing_trigger_pct = trailing_trigger_pct
         self._trailing_lock_pct = trailing_lock_pct
+        self._stop_loss_exit_pct = stop_loss_exit_pct
+        self._take_profit_exit_pct = take_profit_exit_pct
 
     def run(
         self,
@@ -203,18 +227,24 @@ class Backtester:
                 bar_high = Decimal(str(candles.iloc[i]["high"]))
                 exit_at: Decimal | None = None
                 exit_reason = ""
+                exit_pct = Decimal("100")
+                fired_stop = False
+                fired_target = False
                 # Stop takes precedence when a single bar spans both levels: OHLC
                 # cannot say which came first, and assuming the loss is the
                 # honest choice - the alternative flatters every result on a
                 # volatile bar.
                 if stop_price is not None and bar_low <= stop_price:
                     exit_at, exit_reason = stop_price, f"Stop-loss hit at {stop_price}"
+                    exit_pct, fired_stop = self._stop_loss_exit_pct, True
                 elif target_price is not None and bar_high >= target_price:
                     exit_at, exit_reason = target_price, f"Take-profit hit at {target_price}"
+                    exit_pct, fired_target = self._take_profit_exit_pct, True
 
                 if exit_at is not None:
                     sell_price = exit_at * (1 - self._slippage_pct / 100)
-                    gross_proceeds = base_balance * sell_price
+                    sold_amount = base_balance * (exit_pct / 100)
+                    gross_proceeds = sold_amount * sell_price
                     fee_amount = gross_proceeds * (self._fee_pct / 100)
                     net_proceeds = gross_proceeds - fee_amount
                     trades.append(
@@ -222,16 +252,28 @@ class Backtester:
                             timestamp=candles.index[i],
                             side=OrderSide.SELL,
                             price=sell_price,
-                            amount=base_balance,
+                            amount=sold_amount,
                             reason=exit_reason,
-                            pnl=net_proceeds - avg_entry_price * base_balance,
+                            pnl=net_proceeds - avg_entry_price * sold_amount,
                             fee=fee_amount,
                         )
                     )
                     quote_balance += net_proceeds
-                    base_balance = Decimal("0")
-                    avg_entry_price = Decimal("0")
-                    stop_price = target_price = None
+                    base_balance -= sold_amount
+                    if base_balance <= 0:
+                        base_balance = Decimal("0")
+                        avg_entry_price = Decimal("0")
+                        stop_price = target_price = None
+                    else:
+                        # Single-shot: whichever level fired clears even on a
+                        # partial exit, so a price that lingers past it can't
+                        # re-trigger it every following bar and ladder the
+                        # remainder down to dust. The other level (if any)
+                        # stays armed for what's left.
+                        if fired_stop:
+                            stop_price = None
+                        if fired_target:
+                            target_price = None
                     pending_signal = None
 
             if pending_signal is not None:
@@ -267,25 +309,33 @@ class Backtester:
                         target_price = avg_entry_price * (1 + self._take_profit_pct / 100)
                 elif pending_signal.side == OrderSide.SELL and base_balance > 0:
                     sell_price = raw_price * (1 - self._slippage_pct / 100)
-                    gross_proceeds = base_balance * sell_price
+                    # Signal.exit_fraction is 0-1 (matches Signal.confidence's
+                    # convention), unlike the constructor's 0-100 *_exit_pct
+                    # params above - no /100 here.
+                    sold_amount = base_balance * Decimal(str(pending_signal.exit_fraction))
+                    gross_proceeds = sold_amount * sell_price
                     fee_amount = gross_proceeds * (self._fee_pct / 100)
                     net_proceeds = gross_proceeds - fee_amount
-                    pnl = net_proceeds - avg_entry_price * base_balance
+                    pnl = net_proceeds - avg_entry_price * sold_amount
                     trades.append(
                         BacktestTrade(
                             timestamp=timestamp,
                             side=OrderSide.SELL,
                             price=sell_price,
-                            amount=base_balance,
+                            amount=sold_amount,
                             reason=pending_signal.reason,
                             pnl=pnl,
                             fee=fee_amount,
                         )
                     )
                     quote_balance += net_proceeds
-                    base_balance = Decimal("0")
-                    avg_entry_price = Decimal("0")
-                    stop_price = target_price = None
+                    base_balance -= sold_amount
+                    if base_balance <= 0:
+                        base_balance = Decimal("0")
+                        avg_entry_price = Decimal("0")
+                        stop_price = target_price = None
+                    # else: avg_entry_price/stop_price/target_price stay as-is -
+                    # the remainder is still the same position.
 
             # Ratchet after this bar's exits are settled, never before: raising
             # the stop on the same bar's high and then testing it against the

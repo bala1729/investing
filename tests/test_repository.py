@@ -351,6 +351,108 @@ class TestPositionRepository:
         async with UnitOfWork() as uow:
             assert await uow.positions.close_position("BTC/USD", Decimal("45000")) is None
 
+    async def test_reduce_position_long_decrements_amount_and_accumulates_pnl(self) -> None:
+        async with UnitOfWork() as uow:
+            await uow.positions.create_or_update(
+                symbol="BTC/USD", side="long", amount=Decimal("1"), entry_price=Decimal("40000")
+            )
+            await uow.commit()
+
+        async with UnitOfWork() as uow:
+            reduced = await uow.positions.reduce_position(
+                "BTC/USD", sold_amount=Decimal("0.3"), exit_price=Decimal("45000")
+            )
+            await uow.commit()
+
+        assert reduced is not None
+        assert reduced.amount == Decimal("0.7")
+        assert reduced.realized_pnl == Decimal("1500")  # (45000 - 40000) * 0.3
+        assert reduced.entry_price == Decimal("40000")  # unchanged for the remainder
+
+        # A second reduction accumulates rather than overwriting realized_pnl.
+        async with UnitOfWork() as uow:
+            reduced_again = await uow.positions.reduce_position(
+                "BTC/USD", sold_amount=Decimal("0.2"), exit_price=Decimal("46000")
+            )
+            await uow.commit()
+
+        assert reduced_again is not None
+        assert reduced_again.amount == Decimal("0.5")
+        assert reduced_again.realized_pnl == Decimal("2700")  # 1500 + (46000-40000)*0.2
+
+    async def test_reduce_position_short_mirrors_pnl_sign(self) -> None:
+        async with UnitOfWork() as uow:
+            await uow.positions.create_or_update(
+                symbol="BTC/USD", side="short", amount=Decimal("1"), entry_price=Decimal("40000")
+            )
+            await uow.commit()
+
+        async with UnitOfWork() as uow:
+            reduced = await uow.positions.reduce_position(
+                "BTC/USD", sold_amount=Decimal("0.4"), exit_price=Decimal("35000")
+            )
+            await uow.commit()
+
+        assert reduced is not None
+        assert reduced.realized_pnl == Decimal("2000")  # (40000 - 35000) * 0.4
+
+    async def test_reduce_position_leaves_stop_and_target_untouched(self) -> None:
+        async with UnitOfWork() as uow:
+            await uow.positions.create_or_update(
+                symbol="BTC/USD",
+                side="long",
+                amount=Decimal("1"),
+                entry_price=Decimal("40000"),
+                stop_loss=Decimal("38000"),
+                take_profit=Decimal("50000"),
+            )
+            await uow.commit()
+
+        async with UnitOfWork() as uow:
+            reduced = await uow.positions.reduce_position(
+                "BTC/USD", sold_amount=Decimal("0.5"), exit_price=Decimal("45000")
+            )
+            await uow.commit()
+
+        assert reduced is not None
+        assert reduced.stop_loss == Decimal("38000")
+        assert reduced.take_profit == Decimal("50000")
+
+    async def test_reduce_position_can_clear_stop_loss_and_take_profit(self) -> None:
+        """The flags a stop/target-triggered reduction passes to avoid re-firing on the
+        remainder every cycle - see PositionRepository.reduce_position's docstring."""
+        async with UnitOfWork() as uow:
+            await uow.positions.create_or_update(
+                symbol="BTC/USD",
+                side="long",
+                amount=Decimal("1"),
+                entry_price=Decimal("40000"),
+                stop_loss=Decimal("38000"),
+                take_profit=Decimal("50000"),
+            )
+            await uow.commit()
+
+        async with UnitOfWork() as uow:
+            reduced = await uow.positions.reduce_position(
+                "BTC/USD",
+                sold_amount=Decimal("0.5"),
+                exit_price=Decimal("45000"),
+                clear_stop_loss=True,
+                clear_take_profit=True,
+            )
+            await uow.commit()
+
+        assert reduced is not None
+        assert reduced.stop_loss is None
+        assert reduced.take_profit is None
+
+    async def test_reduce_position_missing_returns_none(self) -> None:
+        async with UnitOfWork() as uow:
+            result = await uow.positions.reduce_position(
+                "BTC/USD", sold_amount=Decimal("0.1"), exit_price=Decimal("45000")
+            )
+            assert result is None
+
     async def test_delete_position(self) -> None:
         async with UnitOfWork() as uow:
             await uow.positions.create_or_update(

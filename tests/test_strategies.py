@@ -45,6 +45,40 @@ class TestSignal:
         with pytest.raises(dataclasses.FrozenInstanceError):
             signal.side = OrderSide.SELL  # type: ignore[misc]
 
+    def test_defaults_exit_fraction_to_one(self) -> None:
+        signal = Signal(symbol="BTC/USD", side=OrderSide.SELL, strategy="test", reason="because")
+        assert signal.exit_fraction == 1.0
+
+    def test_rejects_exit_fraction_at_or_below_zero(self) -> None:
+        with pytest.raises(ValueError, match="exit_fraction"):
+            Signal(
+                symbol="BTC/USD",
+                side=OrderSide.SELL,
+                strategy="test",
+                reason="because",
+                exit_fraction=0.0,
+            )
+
+    def test_rejects_exit_fraction_above_one(self) -> None:
+        with pytest.raises(ValueError, match="exit_fraction"):
+            Signal(
+                symbol="BTC/USD",
+                side=OrderSide.SELL,
+                strategy="test",
+                reason="because",
+                exit_fraction=1.01,
+            )
+
+    def test_accepts_exit_fraction_within_range(self) -> None:
+        signal = Signal(
+            symbol="BTC/USD",
+            side=OrderSide.SELL,
+            strategy="test",
+            reason="because",
+            exit_fraction=0.7,
+        )
+        assert signal.exit_fraction == 0.7
+
 
 class TestOhlcvToDataframe:
     """Tests for the raw-ccxt-rows -> DataFrame conversion helper."""

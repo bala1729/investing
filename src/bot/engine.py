@@ -155,7 +155,15 @@ class TradingEngine:
                 # executor's real balance, which is always the ground truth for
                 # what can actually be sold.
                 available = await self._executor.get_balance(base)
-                amount = min(position.amount, available)
+                full_amount = min(position.amount, available)
+                # The == 1.0 branch avoids Decimal trailing-zero padding from an
+                # unnecessary multiply, so the default (full-exit) case is the
+                # exact same Decimal it always was.
+                amount = (
+                    full_amount
+                    if signal.exit_fraction == 1.0
+                    else full_amount * Decimal(str(signal.exit_fraction))
+                )
 
         if amount is None or amount <= 0:
             return EngineResult(executed=False, reason="No amount to trade")
@@ -189,11 +197,23 @@ class TradingEngine:
                         take_profit=decision.take_profit_price,
                     )
                 else:
-                    closed = await uow.positions.close_position(
-                        signal.symbol, order.average_fill_price or reference_price
-                    )
+                    # Same guarantee as the sizing branch above: a SELL that
+                    # reached this point always had a real position.
+                    assert position is not None
+                    exit_price = order.average_fill_price or reference_price
+                    remaining = position.amount - order.filled_amount
+                    if remaining <= Decimal("0.00000001"):
+                        closed = await uow.positions.close_position(signal.symbol, exit_price)
+                    else:
+                        closed = await uow.positions.reduce_position(
+                            signal.symbol,
+                            order.filled_amount,
+                            exit_price,
+                            clear_stop_loss=(signal.strategy == "stop_loss"),
+                            clear_take_profit=(signal.strategy == "take_profit"),
+                        )
                     if closed is not None:
-                        closed_pnl = closed.realized_pnl
+                        closed_pnl = (exit_price - position.entry_price) * order.filled_amount
             await uow.commit()
 
         logger.info(
@@ -239,28 +259,44 @@ class TradingEngine:
             logger.exception(f"Could not send fill alert for {signal.symbol}")
 
     async def enforce_stops(self, symbol: str) -> EngineResult | None:
-        """Apply the trailing ratchet and act on the stop, before any strategy runs.
+        """Apply the trailing ratchet, and act on a stop-loss or take-profit, before any
+        strategy runs.
 
         Returns None when the cycle should carry on to signal generation, or an
-        EngineResult when the position was closed (by the stop here, or by the
-        exchange while the bot was away) and there is nothing further to do this
-        cycle.
+        EngineResult when the position was closed or reduced (by a level here,
+        or by the exchange while the bot was away) and there is nothing
+        further to do this cycle.
 
         Runs ahead of the strategy deliberately: risk management protecting
         capital must not wait behind a strategy that may or may not produce a
         signal, and a strategy should never be asked about a position that has
-        already been stopped out.
+        already been stopped out or taken profit on.
 
-        Exactly one mechanism ever sells. Under POLL the bot compares the ticker
-        to the stop and sells at market; under NATIVE the exchange owns that
-        decision and this method only keeps the resting order in sync. Both
-        consume the same stop price from RiskManager, so switching mechanisms
-        cannot change *where* the stop sits, only who acts on it.
+        Stop-loss and take-profit are independently gated
+        (`stop_enforcement`/`take_profit_enforcement`) and share one position
+        load and one ticker fetch, but are otherwise separate mechanisms - a
+        bot can run NATIVE stop-loss with POLL take-profit, take-profit only
+        with stops off, or any other combination. If both would fire on the
+        same read, stop-loss wins (matches Backtester's "assume the loss"
+        precedent) - structurally unreachable for any valid config, since the
+        take-profit target is always above entry and the stop always below,
+        but checked in that order as defense in depth regardless. Take-profit
+        is poll-only: no take-profit order type exists on the exchange client,
+        so there is no NATIVE path for it the way there is for the stop.
+
+        Exactly one mechanism ever sells the stop side. Under POLL the bot
+        compares the ticker to the stop and sells at market; under NATIVE the
+        exchange owns that decision and this method only keeps the resting
+        order in sync. Both consume the same stop price from RiskManager, so
+        switching mechanisms cannot change *where* the stop sits, only who
+        acts on it.
         """
         enforcement = self._settings.effective_stop_enforcement
-        # Checked before touching the database: with enforcement off this must
-        # cost nothing at all, since it runs on every cycle of every bot.
-        if enforcement is StopEnforcement.OFF:
+        stop_active = enforcement is not StopEnforcement.OFF
+        tp_active = self._settings.take_profit_enforcement
+        # Checked before touching the database: with both off this must cost
+        # nothing at all, since it runs on every cycle of every bot.
+        if not stop_active and not tp_active:
             return None
 
         async with UnitOfWork() as uow:
@@ -271,8 +307,9 @@ class TradingEngine:
             entry_price = position.entry_price
             amount = position.amount
             stop_price = position.stop_loss
+            target_price = position.take_profit
 
-        if enforcement is StopEnforcement.NATIVE:
+        if stop_active and enforcement is StopEnforcement.NATIVE:
             reconciled = await self._reconcile_external_close(symbol, amount, stop_price)
             if reconciled is not None:
                 return reconciled
@@ -280,40 +317,58 @@ class TradingEngine:
         ticker = await self._client.fetch_ticker(symbol)
         price = Decimal(str(ticker["last"]))
 
-        raised_stop = self._risk_manager.calculate_trailing_stop_price(
-            entry_price, stop_price, price
-        )
-        stop_moved = False
-        if raised_stop is not None:
-            async with UnitOfWork() as uow:
-                stop_moved = await uow.positions.raise_stop_loss(symbol, raised_stop)
-                await uow.commit()
-            if stop_moved:
-                stop_price = raised_stop
-                logger.info(
-                    f"Trailing stop raised for {symbol}: stop now {raised_stop} "
-                    f"(entry {entry_price}, price {price})"
-                )
-
-        if stop_price is None:
-            return None
-
-        if enforcement is StopEnforcement.NATIVE:
-            await self._sync_native_stop(symbol, amount, stop_price, replace=stop_moved)
-            return None
-
-        if price > stop_price:
-            return None
-
-        logger.warning(f"Stop-loss breached for {symbol}: price {price} <= stop {stop_price}")
-        return await self.process_signal(
-            Signal(
-                symbol=symbol,
-                side=OrderSide.SELL,
-                strategy="stop_loss",
-                reason=f"Stop-loss hit: price {price} at or below stop {stop_price}",
+        if stop_active:
+            raised_stop = self._risk_manager.calculate_trailing_stop_price(
+                entry_price, stop_price, price
             )
+            stop_moved = False
+            if raised_stop is not None:
+                async with UnitOfWork() as uow:
+                    stop_moved = await uow.positions.raise_stop_loss(symbol, raised_stop)
+                    await uow.commit()
+                if stop_moved:
+                    stop_price = raised_stop
+                    logger.info(
+                        f"Trailing stop raised for {symbol}: stop now {raised_stop} "
+                        f"(entry {entry_price}, price {price})"
+                    )
+
+            if stop_price is not None and enforcement is StopEnforcement.NATIVE:
+                await self._sync_native_stop(symbol, amount, stop_price, replace=stop_moved)
+
+        stop_breach = (
+            stop_active
+            and enforcement is not StopEnforcement.NATIVE
+            and stop_price is not None
+            and price <= stop_price
         )
+        target_breach = tp_active and target_price is not None and price >= target_price
+
+        if stop_breach:
+            logger.warning(f"Stop-loss breached for {symbol}: price {price} <= stop {stop_price}")
+            return await self.process_signal(
+                Signal(
+                    symbol=symbol,
+                    side=OrderSide.SELL,
+                    strategy="stop_loss",
+                    reason=f"Stop-loss hit: price {price} at or below stop {stop_price}",
+                )
+            )
+
+        if target_breach:
+            logger.info(f"Take-profit hit for {symbol}: price {price} >= target {target_price}")
+            exit_fraction = float(Decimal(str(self._settings.take_profit_exit_pct)) / 100)
+            return await self.process_signal(
+                Signal(
+                    symbol=symbol,
+                    side=OrderSide.SELL,
+                    strategy="take_profit",
+                    reason=f"Take-profit hit: price {price} at or above target {target_price}",
+                    exit_fraction=exit_fraction,
+                )
+            )
+
+        return None
 
     async def _reconcile_external_close(
         self, symbol: str, expected_amount: Decimal, stop_price: Decimal | None

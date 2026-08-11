@@ -46,6 +46,16 @@ class Signal:
     strategy: str
     reason: str
     confidence: float = 1.0
+    exit_fraction: float = 1.0
+    """Fraction of the open position a SELL should close. Ignored on BUY.
+
+    Defaults to a full exit so every strategy that never sets this behaves
+    exactly as before partial exits existed.
+    """
+
+    def __post_init__(self) -> None:
+        if not (0 < self.exit_fraction <= 1):
+            raise ValueError("exit_fraction must be between 0 (exclusive) and 1 (inclusive)")
 
 
 def detect_crossover(fast: pd.Series, slow: pd.Series) -> OrderSide | None:

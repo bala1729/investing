@@ -108,9 +108,18 @@ class RiskManager:
     def calculate_take_profit_price(
         self, entry_price: Decimal, risk_reward_ratio: Decimal | None = None
     ) -> Decimal:
-        """Take-profit price, `risk_reward_ratio` times the stop-loss distance above entry."""
+        """Take-profit price: a flat percent above entry, or `risk_reward_ratio` times the
+        stop-loss distance above entry if no flat percent is configured.
+
+        The flat mode (`Settings.take_profit_pct`) only applies when the caller didn't pass an
+        explicit `risk_reward_ratio` - an explicit argument always wins over settings-derived
+        defaults, matching every other override in this class.
+        """
         if entry_price <= 0:
             raise ValueError("entry_price must be positive")
+        flat_pct = Decimal(str(self._settings.take_profit_pct))
+        if risk_reward_ratio is None and flat_pct > 0:
+            return entry_price * (1 + flat_pct / 100)
         ratio = risk_reward_ratio if risk_reward_ratio is not None else self._risk_reward_ratio
         if ratio <= 0:
             raise ValueError("risk_reward_ratio must be positive")

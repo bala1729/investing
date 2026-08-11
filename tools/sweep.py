@@ -24,6 +24,9 @@ Config is a JSON list of objects:
       {"arm": "stop2", "strategy": "ema(10,30)", "timeframe": "4h",
        "windows": ["full"], "stops": {"stop": 2, "trigger": 2, "lock": 1}},
 
+      {"arm": "tp15_e70", "strategy": "rsi_m2", "timeframe": "4h",
+       "windows": ["full"], "stops": {"target": 15, "target_exit_pct": 70}},
+
       {"arm": "no_mtf", "strategy": "rsi_m2", "timeframe": "1h",
        "windows": ["full"], "no_mtf": true},
 
@@ -158,6 +161,8 @@ def run_one(
         take_profit_pct=Decimal(str(stops.get("target", 0))),
         trailing_trigger_pct=Decimal(str(stops.get("trigger", 0))),
         trailing_lock_pct=Decimal(str(stops.get("lock", 0))),
+        stop_loss_exit_pct=Decimal(str(stops.get("stop_exit_pct", 100))),
+        take_profit_exit_pct=Decimal(str(stops.get("target_exit_pct", 100))),
     ).run(entry, higher_tf_candles=higher)
 
     win = result.win_rate_pct

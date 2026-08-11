@@ -123,6 +123,29 @@ class Settings(BaseSettings):
         "activates it and fill instantly. Note this is a one-step ratchet, not a "
         "continuously trailing stop: the stop moves once and then holds.",
     )
+    take_profit_pct: float = Field(
+        default=0.0,
+        description="Flat percent above entry for the take-profit target. 0 (default) falls "
+        "back to risk_reward_ratio times the stop-loss distance, RiskManager's original "
+        "calculation - it does not disable a target from being computed, only which formula "
+        "prices it. Measurement found a 20% target paired with take_profit_exit_pct=70 beat a "
+        "no-take-profit baseline on return, win rate, and (mostly) drawdown for rsi_m2 on 4h, "
+        "across BTC/ETH/SOL and every start date tested (see docs/backtest-results.md, "
+        "2026-08-10). That result is scoped to rsi_m2/4h specifically - set this per bot via "
+        "env var, not by changing this default, the same way stop_enforcement is opt-in.",
+    )
+    take_profit_exit_pct: float = Field(
+        default=100.0,
+        description="Percent of the position a take-profit hit closes, mirroring Backtester's "
+        "take_profit_exit_pct. 100 (default) is a full exit.",
+    )
+    take_profit_enforcement: bool = Field(
+        default=False,
+        description="Whether the bot acts on a position's take-profit target at all. Off by "
+        "default, same philosophy as stop_enforcement - enable it deliberately, per bot. "
+        "Poll-only: no take-profit order type exists on the exchange client, so there is no "
+        "'native' option the way there is for stop-loss.",
+    )
 
     kill_switch_file: str = Field(
         default="KILL_SWITCH",
@@ -180,6 +203,14 @@ class Settings(BaseSettings):
                 "the raised stop would sit at or above the price that armed it and fill "
                 "immediately"
             )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_take_profit(self) -> "Settings":
+        if self.take_profit_pct < 0:
+            raise ValueError("take_profit_pct cannot be negative")
+        if not (0 < self.take_profit_exit_pct <= 100):
+            raise ValueError("take_profit_exit_pct must be between 0 (exclusive) and 100")
         return self
 
     @property

@@ -362,6 +362,105 @@ class TestProcessSignalSell:
         call_args = executor.execute_market_order.await_args
         assert call_args.args[2] == Decimal("0.5")
 
+    async def test_explicit_quantity_smaller_than_position_leaves_a_remainder(
+        self, db_settings: Settings
+    ) -> None:
+        """Regression: an explicit partial quantity used to fully close the position
+        and compute realized_pnl off the wrong (full, pre-trade) amount, discarding
+        the real fill size. The close-vs-reduce decision must key off what actually
+        filled, not off whether the amount came from exit_fraction or a quantity
+        override.
+        """
+        async with UnitOfWork() as uow:
+            await uow.positions.create_or_update(
+                symbol="BTC/USD", side="long", amount=Decimal("1.5"), entry_price=Decimal("90")
+            )
+            await uow.commit()
+
+        client = make_client(last_price=Decimal("100"))
+        executor = make_executor()
+        executor.execute_market_order.return_value = make_order(
+            side=OrderSide.SELL, filled_amount=Decimal("0.5"), average_fill_price=Decimal("100")
+        )
+        engine = make_engine(client, executor, db_settings)
+
+        await engine.process_signal(sell_signal(), quantity=Decimal("0.5"))
+
+        async with UnitOfWork() as uow:
+            position = await uow.positions.get_by_symbol("BTC/USD")
+        assert position is not None
+        assert position.amount == Decimal("1.0")  # 1.5 - 0.5, not zeroed
+        assert position.realized_pnl == Decimal("5")  # (100 - 90) * 0.5, not * 1.5
+
+    async def test_exit_fraction_sells_a_fraction_and_leaves_a_remainder(
+        self, db_settings: Settings
+    ) -> None:
+        async with UnitOfWork() as uow:
+            await uow.positions.create_or_update(
+                symbol="BTC/USD",
+                side="long",
+                amount=Decimal("1"),
+                entry_price=Decimal("90"),
+                stop_loss=Decimal("80"),
+                take_profit=Decimal("120"),
+            )
+            await uow.commit()
+
+        client = make_client(last_price=Decimal("100"))
+        executor = make_executor()
+        executor.execute_market_order.return_value = make_order(
+            side=OrderSide.SELL, filled_amount=Decimal("0.7"), average_fill_price=Decimal("100")
+        )
+        engine = make_engine(client, executor, db_settings)
+
+        signal = Signal(
+            symbol="BTC/USD",
+            side=OrderSide.SELL,
+            strategy="test",
+            reason="test",
+            exit_fraction=0.7,
+        )
+        result = await engine.process_signal(signal)
+
+        assert result.executed is True
+        call_args = executor.execute_market_order.await_args
+        assert call_args.args[2] == Decimal("0.7")  # 1.0 * 0.7
+
+        async with UnitOfWork() as uow:
+            position = await uow.positions.get_by_symbol("BTC/USD")
+        assert position is not None
+        assert position.amount == Decimal("0.3")
+        assert position.realized_pnl == Decimal("7")  # (100 - 90) * 0.7
+        # The remainder is still the same position - stop/target survive the reduce.
+        assert position.stop_loss == Decimal("80")
+        assert position.take_profit == Decimal("120")
+
+    async def test_full_exit_fraction_still_zeroes_the_position(
+        self, db_settings: Settings
+    ) -> None:
+        """Regression pin: exit_fraction's default (1.0) must reproduce today's
+        full-close behavior exactly, not just approximately."""
+        async with UnitOfWork() as uow:
+            await uow.positions.create_or_update(
+                symbol="BTC/USD", side="long", amount=Decimal("1"), entry_price=Decimal("90")
+            )
+            await uow.commit()
+
+        client = make_client(last_price=Decimal("100"))
+        executor = make_executor()
+        executor.execute_market_order.return_value = make_order(
+            side=OrderSide.SELL, filled_amount=Decimal("1"), average_fill_price=Decimal("100")
+        )
+        engine = make_engine(client, executor, db_settings)
+
+        await engine.process_signal(sell_signal())
+
+        async with UnitOfWork() as uow:
+            position = await uow.positions.get_by_symbol("BTC/USD")
+        assert position is not None
+        assert position.amount == Decimal("0")
+        assert position.realized_pnl == Decimal("10")
+
 
 class ScriptedStrategy(Strategy):
     def __init__(self, signal: Signal | None) -> None:

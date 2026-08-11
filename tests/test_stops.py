@@ -66,6 +66,7 @@ async def open_position(
     amount: Decimal = Decimal("1"),
     entry: Decimal = Decimal("100"),
     stop: Decimal | None = Decimal("98"),
+    take_profit: Decimal | None = None,
 ) -> None:
     async with UnitOfWork() as uow:
         await uow.positions.create_or_update(
@@ -76,15 +77,39 @@ async def open_position(
             strategy="test",
             is_paper=True,
             stop_loss=stop,
-            take_profit=None,
+            take_profit=take_profit,
         )
         await uow.commit()
+
+
+def take_profit_order(filled_amount: Decimal, price: Decimal) -> Order:
+    """A filled SELL order for the given (possibly partial) amount, matching what the
+    executor would return for a take-profit fill."""
+    return Order(
+        id="tp1",
+        symbol="BTC/USD",
+        side=OrderSide.SELL,
+        order_type=OrderType.MARKET,
+        amount=filled_amount,
+        price=None,
+        status=OrderStatus.FILLED,
+        filled_amount=filled_amount,
+        average_fill_price=price,
+        exchange_order_id="tpx1",
+        is_paper=True,
+    )
 
 
 async def stored_stop(symbol: str = "BTC/USD") -> Decimal | None:
     async with UnitOfWork() as uow:
         position = await uow.positions.get_by_symbol(symbol)
         return position.stop_loss if position else None
+
+
+async def stored_take_profit(symbol: str = "BTC/USD") -> Decimal | None:
+    async with UnitOfWork() as uow:
+        position = await uow.positions.get_by_symbol(symbol)
+        return position.take_profit if position else None
 
 
 async def stored_amount(symbol: str = "BTC/USD") -> Decimal:
@@ -101,6 +126,13 @@ def poll_settings(base: Settings, **kwargs: object) -> Settings:
 def ratchet_settings(base: Settings, **kwargs: object) -> Settings:
     return poll_settings(base, trailing_stop_trigger_pct=2.0,
                          trailing_stop_lock_pct=1.0, **kwargs)
+
+
+def take_profit_settings(base: Settings, **kwargs: object) -> Settings:
+    """Take-profit enforcement is off by default, so every test must opt in explicitly."""
+    return base.model_copy(
+        update={"take_profit_enforcement": True, "take_profit_exit_pct": 70.0, **kwargs}
+    )
 
 
 class TestTrailingStopCalculator:
@@ -266,6 +298,140 @@ class TestPollEnforcement:
 
         assert result is not None and result.executed is True
         assert await stored_amount() == Decimal("0")
+
+
+class TestTakeProfitPollEnforcement:
+    """Live take-profit enforcement: poll-only, independent of stop-loss."""
+
+    async def test_no_position_is_a_no_op(self, db_settings: Settings) -> None:
+        settings = take_profit_settings(db_settings)
+        engine = TradingEngine(make_client(), make_executor(), RiskManager(settings), settings)
+        assert await engine.enforce_stops("BTC/USD") is None
+
+    async def test_price_below_target_lets_the_cycle_continue(
+        self, db_settings: Settings
+    ) -> None:
+        await open_position(entry=Decimal("100"), stop=None, take_profit=Decimal("120"))
+        settings = take_profit_settings(db_settings)
+        engine = TradingEngine(
+            make_client(Decimal("110")), make_executor(), RiskManager(settings), settings
+        )
+
+        assert await engine.enforce_stops("BTC/USD") is None
+        assert await stored_amount() == Decimal("1")
+
+    async def test_price_at_target_sells_the_configured_fraction(
+        self, db_settings: Settings
+    ) -> None:
+        await open_position(entry=Decimal("100"), stop=None, take_profit=Decimal("120"))
+        executor = make_executor(base_balance=Decimal("1"))
+        executor.execute_market_order.return_value = take_profit_order(
+            Decimal("0.7"), Decimal("120")
+        )
+        settings = take_profit_settings(db_settings)  # exit_pct=70
+        engine = TradingEngine(
+            make_client(Decimal("120")), executor, RiskManager(settings), settings
+        )
+
+        result = await engine.enforce_stops("BTC/USD")
+
+        assert result is not None and result.executed is True
+        call_args = executor.execute_market_order.await_args
+        assert call_args.args[2] == Decimal("0.7")  # 1.0 position * 0.7 exit fraction
+        assert await stored_amount() == Decimal("0.3")
+
+    async def test_target_is_cleared_after_firing_so_it_does_not_re_fire(
+        self, db_settings: Settings
+    ) -> None:
+        """The live version of the laddering bug Backtester already guards against: if the
+        target price weren't cleared, the next cycle would still see price past it and sell
+        another 70% of the remainder, then 70% of what's left of that, forever."""
+        await open_position(entry=Decimal("100"), stop=None, take_profit=Decimal("120"))
+        executor = make_executor(base_balance=Decimal("1"))
+        executor.execute_market_order.return_value = take_profit_order(
+            Decimal("0.7"), Decimal("120")
+        )
+        settings = take_profit_settings(db_settings)
+        engine = TradingEngine(
+            make_client(Decimal("120")), executor, RiskManager(settings), settings
+        )
+
+        first = await engine.enforce_stops("BTC/USD")
+        assert first is not None and first.executed is True
+        assert await stored_take_profit() is None
+        assert await stored_amount() == Decimal("0.3")
+
+        executor.execute_market_order.reset_mock()
+        second = await engine.enforce_stops("BTC/USD")
+
+        assert second is None
+        executor.execute_market_order.assert_not_awaited()
+        assert await stored_amount() == Decimal("0.3")  # unchanged - no second fire
+
+    async def test_disabled_by_default_is_a_no_op(self, db_settings: Settings) -> None:
+        await open_position(entry=Decimal("100"), stop=None, take_profit=Decimal("120"))
+        executor = make_executor(base_balance=Decimal("1"))
+        engine = TradingEngine(
+            make_client(Decimal("120")), executor, RiskManager(db_settings), db_settings
+        )
+
+        assert await engine.enforce_stops("BTC/USD") is None
+        executor.execute_market_order.assert_not_awaited()
+        assert await stored_amount() == Decimal("1")
+
+    async def test_stop_off_with_take_profit_active_does_not_touch_the_trailing_ratchet(
+        self, db_settings: Settings
+    ) -> None:
+        """Guards a control-flow gap: turning on take-profit-only enforcement must not
+        silently start computing/persisting a raised stop, which is stop-specific machinery
+        that has to stay gated on stop-loss enforcement being active, not merely 'we didn't
+        return early from the combined off-check'."""
+        await open_position(entry=Decimal("100"), stop=Decimal("98"), take_profit=Decimal("500"))
+        settings = db_settings.model_copy(
+            update={
+                "trailing_stop_trigger_pct": 2.0,
+                "trailing_stop_lock_pct": 1.0,
+                "take_profit_enforcement": True,
+            }
+        )
+        assert settings.stop_enforcement is StopEnforcement.OFF  # sanity
+        engine = TradingEngine(
+            make_client(Decimal("103")), make_executor(), RiskManager(settings), settings
+        )
+
+        assert await engine.enforce_stops("BTC/USD") is None  # price 103 < target 500
+        assert await stored_stop() == Decimal("98")  # untouched, not raised to 101
+
+    async def test_native_stop_and_poll_take_profit_work_independently(
+        self, db_settings: Settings
+    ) -> None:
+        """A bot can legitimately run NATIVE stop-loss alongside POLL take-profit - each
+        mechanism must keep working on its own."""
+        await open_position(entry=Decimal("100"), stop=Decimal("90"), take_profit=Decimal("120"))
+        settings = db_settings.model_copy(
+            update={
+                "trading_mode": TradingMode.LIVE,
+                "stop_enforcement": StopEnforcement.NATIVE,
+                "take_profit_enforcement": True,
+                "take_profit_exit_pct": 70.0,
+            }
+        )
+        client = make_client(Decimal("120"))  # at the target, nowhere near the native stop
+        executor = make_executor(base_balance=Decimal("1"))
+        executor.execute_market_order.return_value = take_profit_order(
+            Decimal("0.7"), Decimal("120")
+        )
+        engine = TradingEngine(client, executor, RiskManager(settings), settings)
+
+        result = await engine.enforce_stops("BTC/USD")
+
+        assert result is not None and result.executed is True
+        # The native stop machinery still ran (a resting stop got placed) alongside the
+        # independent take-profit fire.
+        client.create_stop_loss_order.assert_awaited_once()
+        call_args = executor.execute_market_order.await_args
+        assert call_args.args[2] == Decimal("0.7")
+        assert await stored_take_profit() is None
 
 
 class TestNativeEnforcement:
