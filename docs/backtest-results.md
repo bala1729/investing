@@ -1521,3 +1521,68 @@ everywhere) if return isn't the only criterion. Neither width is invalidated, bu
 unambiguous win it was on the other three symbols either - this is exactly the kind of per-symbol
 variation that's easy to miss by assuming a validated config on one asset transfers cleanly to
 another, which is why this check was worth doing before any live capital went on ADA.
+
+---
+
+## 2026-08-11 (continued) — Evaluating the RSI scanner's 13 signals for live trading: 4 pass, 1 clean reject
+
+**Why this run exists.** The RSI scanner (`scripts/rsi_scanner.py`) flagged 13 symbols as currently
+bullish on `4h`. "Currently bullish" is a snapshot, not evidence of an edge - before considering
+real money on any of them, each needed the same `rsi_m2`/`4h` control + start-date treatment ADA got.
+
+**Feasibility first:** of the 13, `CAP`/`CC` have no historical data in the local archive at all
+(can't backtest); `BNB`/`ENA`/`TAO` have only 8-18 months (too short for a start-date check to mean
+anything). The remaining 8 - `CRV`, `DOGE`, `INJ`, `LINK`, `LTC`, `NEAR`, `SUI`, `TRX` - have 2.5-12
+years of history and were swept: `tools/examples/scanner_candidates_rsi_m2.json` (control, 4h,
+2022-2025+full) then `tools/examples/scanner_candidates_startdate.json` (2018+/2020+/2022+) on the
+7 that showed any edge after the first pass.
+
+### Full-history vs buy-and-hold, and per-year record
+
+| Symbol | History | Full-history return | Buy&hold | Years beating B&H |
+|---|---|---|---|---|
+| DOGE | 6.0 yr | 1,614,453.85% | 5,483.75% | 3/4 |
+| INJ | 4.5 yr | 15,255.09% | -51.38% | 3/4 |
+| LINK | 6.3 yr | 46,588.36% | 541.13% | 3/4 |
+| LTC | 12.2 yr | 390,330.60% | 2,457.67% | 3/4 |
+| CRV | 5.3 yr | 41,573.86% | -76.52% | 2/4 |
+| NEAR | 3.5 yr | 1,327.40% | -56.43% | 3/4 (2022 partial) |
+| SUI | 2.7 yr | 5,413.70% | -12.36% | 3/3 (short history) |
+| **TRX** | 5.9 yr | **754.40%** | **847.02%** | **0/4** |
+
+**TRX is a clean reject** - the only symbol tested this session (including every one from earlier
+entries) to lose to buy-and-hold on full-history *and* every individual year. Not dropped for being
+merely weak; dropped for failing in every way this file measures a strategy.
+
+### Start-date sensitivity on the 7 that passed the first bar
+
+| Symbol | 2018+ | 2020+ | 2022+ | Distinct cuts? |
+|---|---|---|---|---|
+| DOGE | 1,614,453.85% (bh 5,483.75%) | 1,658,777.70% (bh 5,734.06%) | 4,373.01% (bh -31.13%) | 3 distinct, all win |
+| INJ | 15,255.09% (bh -51.38%) | 15,255.09% (bh -51.38%) | 12,228.33% (bh -49.36%) | 2 distinct, both win |
+| LINK | 46,588.36% (bh 541.13%) | 42,273.64% (bh 580.23%) | 1,674.86% (bh -37.58%) | 3 distinct, all win |
+| LTC | 25,550.82% (bh -66.69%) | 2,695.38% (bh 86.46%) | 265.80% (bh -47.52%) | 3 distinct, all win (narrowest at 2020+) |
+| CRV | 41,573.86% (bh -76.52%) | 41,573.86% (bh -76.52%) | 1,512.54% (bh -93.25%) | 2 distinct, both win |
+| NEAR | 1,327.40% (bh -56.43%) | 1,327.40% | 1,327.40% | **0 distinct - data too short to test** |
+| SUI | 5,413.70% (bh -12.36%) | 5,413.70% | 5,413.70% | **0 distinct - data too short to test** |
+
+**DOGE, INJ, LINK, LTC beat buy-and-hold at every genuinely distinct start date, with 3/4 per-year
+consistency and 4.5-12 years of history each** - the strongest evidence bar in this file, matching
+or exceeding what qualified ADA. CRV is real but noisier (2/4 years, a coin-flip). NEAR and SUI are
+positive but their "start-date check" is vacuous - too little history for the three cuts to actually
+differ, so this isn't real robustness evidence, just one number repeated three times.
+
+### Minimum-order feasibility
+
+All 13 original signals clear Kraken's minimum order size comfortably against this account's actual
+position sizing (~$17.91/trade on the live balance at the time, vs $3.46-$11.57 minimums) - sizing
+was never the constraint for any of them; data availability was.
+
+### Outcome
+
+**Went live on `DOGE`, `INJ`, `LINK`, `LTC`** alongside the existing ADA bot - same `rsi_m2`/`4h`,
+no take-profit (matching what was actually backtested here). `TRX` explicitly rejected. `CRV`/`NEAR`/
+`SUI` not launched - real but thinner evidence than the other four; `CAP`/`CC`/`BNB`/`ENA`/`TAO` not
+backtestable with current data. See `~/kraken-bot-state/RESTART.md` for the launch details and the
+concurrency risk this specific launch surfaced (5 bots sharing one account balance, sized
+independently per-process - documented there, not a backtest finding).
