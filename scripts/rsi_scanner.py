@@ -43,12 +43,27 @@ from src.exchange.executor import OrderSide
 from src.exchange.kraken import KrakenClient
 from src.notifications import SmsNotifier
 
-# Stablecoins and fiat currencies traded against USD on Kraken - an RSI momentum
-# signal on an asset pegged to the dollar is noise, not signal.
+# Fiat currencies and stablecoins with a name that doesn't start with "USD" -
+# an RSI momentum signal on an asset pegged to the dollar is noise, not signal.
+# USD-prefixed stablecoins (USDT, USDC, USDG, USDS, USDP, and any future one
+# Kraken lists) are caught generically by _is_stablecoin_or_fiat() below rather
+# than needing to be named here - a real ticker, USDPT, slipped through an
+# earlier version of this list that only named the well-known ones.
 EXCLUDED_BASE_CURRENCIES = {
-    "USDT", "USDC", "DAI", "TUSD", "USDP", "PYUSD", "USDG", "USDS",
+    "DAI", "TUSD", "PYUSD",
     "EUR", "GBP", "CHF", "AUD", "CAD", "JPY",
 }
+
+
+def _is_stablecoin_or_fiat(base: str) -> bool:
+    """Whether `base` is a fiat currency or a USD-pegged stablecoin.
+
+    Catches the explicit list above, plus any base symbol starting with "USD"
+    - the naming convention essentially every USD stablecoin follows (USDT,
+    USDC, USDG, USDS, USDP, USDPT, ...), so a new one Kraken lists is excluded
+    automatically rather than requiring this list to be kept up to date by hand.
+    """
+    return base.upper().startswith("USD") or base.upper() in EXCLUDED_BASE_CURRENCIES
 
 
 def parse_args() -> argparse.Namespace:
@@ -92,7 +107,7 @@ async def select_symbols(client: KrakenClient, min_volume: float) -> list[str]:
         if m.get("quote") == "USD"
         and m.get("spot")
         and m.get("active")
-        and m["symbol"].split("/")[0] not in EXCLUDED_BASE_CURRENCIES
+        and not _is_stablecoin_or_fiat(m["symbol"].split("/")[0])
     }
     tickers = await client.fetch_tickers()
     liquid = [
