@@ -1633,3 +1633,63 @@ entirely by 2022 and doesn't survive a more recent start.
 No new live bots. `USDPT` was never a real signal (scanner bug, now fixed - `scripts/rsi_scanner.py`
 commit `1b119d3`). `HYPE` needs more history before it can be evaluated at all. `XMR` is a genuine,
 fully-tested rejection - add it alongside `TRX` as a symbol this strategy should not trade.
+
+---
+
+## 2026-08-13 (continued) — 8 more scanner signals: ATOM passes cleanly, AVAX passes with a caveat, 4 deferred, 2 already known
+
+**The scanner flagged `AKE`, `ATOM`, `AVAX`, `AVNT`, `LINK`, `SOL`, `SUI`, `TAO` as newly bullish.**
+`LINK` and `SOL` are already validated elsewhere in this file (LINK: 2026-08-11 entry; SOL: part of
+the 2026-08-10 RSI-slope re-sweep) - no new work needed for those two. `SUI`/`TAO` were already
+evaluated 2026-08-11 and deferred for too little history; re-checked now (3 days later) and
+unchanged - still 2.7yr/1.5yr, still too short. `AKE`/`AVNT` have no local archive data; Kraken's
+live API returns only ~100 days for each - same "too new to test" situation as HYPE. `AKE`
+additionally shows a 36x price range over those 100 days (0.00019-0.0069) - elevated-risk even once
+it has enough history to backtest properly. That leaves `ATOM` and `AVAX` as the two genuinely new
+evaluations.
+
+### `ATOM/USD` - 6.7 years of history, full `rsi_m2`/`4h` control + start-date sweep
+
+| Window | Return | Buy&hold | Win rate | Max drawdown |
+|---|---|---|---|---|
+| 2022 | 39.69% | -71.28% | 40.26% | 28.03% |
+| 2023 | 6.03% | 15.23% | 38.46% | 30.43% |
+| 2024 | 85.94% | -41.51% | 48.65% | 18.20% |
+| 2025 | 12.69% | -68.13% | 39.44% | 40.37% |
+| full | 11,850.96% | -72.39% | 43.81% | 40.37% |
+| 2018+ | 11,850.96% | -72.39% | 43.81% | 40.37% |
+| 2020+ | 5,338.49% | -54.14% | 42.67% | 40.37% |
+| 2022+ | 278.71% | -94.08% | 41.91% | 40.37% |
+
+**Passes cleanly, on par with DOGE/INJ/LINK/LTC.** Three genuinely distinct start-date cuts
+(2019-2025 gives real separation, unlike the shorter-history symbols), all win decisively. 3 of 4
+individual years beat buy-and-hold. Win rate and drawdown both land in the same range as the
+symbols already live.
+
+### `AVAX/USD` - 4 years of history, same sweep
+
+| Window | Return | Buy&hold | Win rate | Max drawdown |
+|---|---|---|---|---|
+| 2022 | 94.93% | -90.07% | 51.43% | 35.31% |
+| 2023 | 162.65% | 257.35% | 37.97% | 19.56% |
+| 2024 | 274.90% | -8.69% | 53.62% | 15.77% |
+| 2025 | 44.27% | -64.75% | 36.36% | 37.45% |
+| full | 3,440.99% | -89.75% | 45.12% | 37.45% |
+| 2018+ | 3,440.99% | -89.75% | 45.12% | 37.45% |
+| 2020+ | 3,440.99% | -89.75% | 45.12% | 37.45% |
+| 2022+ | 3,440.99% | -88.75% | 45.12% | 37.45% |
+
+**Positive, but with the same caveat as NEAR/SUI: the three start-date cuts aren't actually
+independent.** AVAX's data starts 2021-12-21, so `2018+`/`2020+`/`2022+` are effectively the same
+window three times (the tiny buy-and-hold difference at `2022+` confirms the slicing works - the
+strategy's own trades just happen not to differ across an 11-day shift in start point). 3 of 4
+individual years beat buy-and-hold and the full-history margin is large, so this is a real,
+reasonably strong case - just not stress-tested across genuinely separate market regimes the way
+ATOM and the four live symbols were.
+
+### Outcome
+
+`ATOM` recommended for live - same evidence bar as the four already running. `AVAX` is a real
+candidate but with the single-window caveat noted above, same tier as NEAR/SUI/CRV from the
+2026-08-11 batch. `SUI`/`TAO`/`AKE`/`AVNT` remain deferred (unchanged or too-new history). `LINK`/
+`SOL` need no new evaluation - already validated.
