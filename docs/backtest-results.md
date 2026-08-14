@@ -1586,3 +1586,50 @@ no take-profit (matching what was actually backtested here). `TRX` explicitly re
 backtestable with current data. See `~/kraken-bot-state/RESTART.md` for the launch details and the
 concurrency risk this specific launch surfaced (5 bots sharing one account balance, sized
 independently per-process - documented there, not a backtest finding).
+
+---
+
+## 2026-08-13 — RSI scanner signal check: USDPT (stablecoin, scanner bug), HYPE (too little history), XMR (clean reject)
+
+**Three more scanner signals evaluated, none resulted in a live bot.**
+
+**`USDPT/USD`** is a USD-pegged stablecoin, not a real momentum opportunity - confirmed by its
+entire 36-day available price history ranging $0.99811-$1.00044 (~0.23% total spread). It slipped
+past `scripts/rsi_scanner.py`'s exclusion list, which only named well-known stablecoins by ticker.
+Fixed generically: any base symbol starting with `USD` is now excluded, matching the naming
+convention essentially every USD stablecoin follows, rather than requiring the list to be updated
+by hand every time a new one gets listed. No backtest needed - this was never a real signal.
+
+**`HYPE/USD`** has no local archive data, and Kraken's live API only returns 40 days of history for
+it - far short of even the thinnest case accepted so far (SUI at 2.5 years, already flagged as weak
+evidence). Not backtestable with current data; not a rejection of the symbol, just not enough
+history to say anything yet.
+
+**`XMR/USD`** - 9 years of local history available, full `rsi_m2`/`4h` control + start-date
+sensitivity run. **Clean reject, worse than TRX on some dimensions:**
+
+| Window | Return | Buy&hold | Win rate | Max drawdown |
+|---|---|---|---|---|
+| 2022 | -2.70% | -36.26% | 34.04% | 40.22% |
+| 2023 | -29.77% | 11.70% | 30.77% | 38.60% |
+| 2024 | -36.83% | 13.53% | 33.33% | 47.96% |
+| 2025 | 21.93% | 128.99% | 38.89% | 25.44% |
+| full | 2,574.11% | 2,165.08% | 40.29% | 76.37% |
+| 2018+ | 149.80% | 30.01% | 38.39% | 76.37% |
+| 2020+ | 6.37% | 875.92% | 38.17% | 76.37% |
+| 2022+ | -48.16% | 89.38% | 34.24% | 76.37% |
+
+Wins only 1 of 4 individual years (2022, by avoiding a crash - buy-and-hold was itself down that
+year). Loses badly at 2 of 3 start-date cuts: at 2020+, buy-and-hold returned 875.92% against the
+strategy's 6.37%; at 2022+, the strategy lost 48.16% while buy-and-hold gained 89.38%. Win rate sits
+30-40% across every window (the four live symbols were all 45-50%+). Max drawdown of 76.37% on the
+longer windows is more than double anything seen from a symbol that passed this session's bar. The
+full-history number (2,574% vs 2,165%, a bare +19% edge) looks like a marginal win in isolation -
+exactly the kind of headline the start-date check exists to catch, since it's propped up almost
+entirely by 2022 and doesn't survive a more recent start.
+
+### Outcome
+
+No new live bots. `USDPT` was never a real signal (scanner bug, now fixed - `scripts/rsi_scanner.py`
+commit `1b119d3`). `HYPE` needs more history before it can be evaluated at all. `XMR` is a genuine,
+fully-tested rejection - add it alongside `TRX` as a symbol this strategy should not trade.

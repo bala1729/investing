@@ -1,0 +1,4 @@
+[
+ {"arm": "control_no_tp", "strategy": "rsi_m2", "timeframe": "4h",
+  "windows": ["2018+", "2020+", "2022+"]}
+]
