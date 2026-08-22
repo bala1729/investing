@@ -7,6 +7,7 @@ signal came from - passes through the same risk gate before it can execute.
 
 import asyncio
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from src.config import Settings, StopEnforcement, get_settings
 from src.database.repository import UnitOfWork
 from src.exchange.executor import Order, OrderExecutor, OrderSide, OrderStatus
 from src.exchange.kraken import KrakenClient
+from src.journal import record_execution
 from src.notifications import SmsNotifier, format_fill_alert
 from src.risk.manager import RiskManager
 
@@ -176,6 +178,8 @@ class TradingEngine:
             order = await self._executor.execute_market_order(signal.symbol, signal.side, amount)
 
         closed_pnl: Decimal | None = None
+        hold_seconds: float | None = None
+        return_pct: float | None = None
         async with UnitOfWork() as uow:
             await uow.orders.create(order, strategy=signal.strategy)
             if order.status == OrderStatus.FILLED:
@@ -214,6 +218,20 @@ class TradingEngine:
                         )
                     if closed is not None:
                         closed_pnl = (exit_price - position.entry_price) * order.filled_amount
+                        # SQLite drops tzinfo on round-trip even though the column is
+                        # declared timezone=True - opened_at comes back naive, but it was
+                        # always written as UTC (see Position.opened_at's default), so treat
+                        # a naive value as UTC rather than let subtraction raise.
+                        opened_at = position.opened_at
+                        if opened_at.tzinfo is None:
+                            opened_at = opened_at.replace(tzinfo=UTC)
+                        hold_seconds = (datetime.now(UTC) - opened_at).total_seconds()
+                        if position.entry_price:
+                            return_pct = float(
+                                (exit_price - position.entry_price)
+                                / position.entry_price
+                                * 100
+                            )
             await uow.commit()
 
         logger.info(
@@ -222,6 +240,7 @@ class TradingEngine:
         )
         if order.status == OrderStatus.FILLED:
             await self._alert_fill(signal, order, closed_pnl)
+            self._record_journal(signal, order, hold_seconds, return_pct, closed_pnl)
         return EngineResult(executed=True, order=order)
 
     def _kill_switch_engaged(self) -> bool:
@@ -257,6 +276,38 @@ class TradingEngine:
             )
         except Exception:
             logger.exception(f"Could not send fill alert for {signal.symbol}")
+
+    def _record_journal(
+        self,
+        signal: Signal,
+        order: Order,
+        hold_seconds: float | None,
+        return_pct: float | None,
+        closed_pnl: Decimal | None,
+    ) -> None:
+        """Append to the shared trade journal, never letting a write failure reach the caller.
+
+        Same philosophy as _alert_fill: a trade that executed must never be
+        reported as failed - or worse, left half-applied - because a journal
+        write hit a locked file or a full disk.
+        """
+        try:
+            record_execution(
+                self._settings.journal_db_path,
+                symbol=signal.symbol,
+                side=signal.side.value,
+                strategy=signal.strategy,
+                reason=signal.reason,
+                amount=order.filled_amount,
+                price=order.average_fill_price or Decimal("0"),
+                fee=order.fee or Decimal("0"),
+                is_paper=order.is_paper,
+                hold_seconds=hold_seconds,
+                return_pct=return_pct,
+                realized_pnl=closed_pnl,
+            )
+        except Exception:
+            logger.exception(f"Could not write trade journal entry for {signal.symbol}")
 
     async def enforce_stops(self, symbol: str) -> EngineResult | None:
         """Apply the trailing ratchet, and act on a stop-loss or take-profit, before any

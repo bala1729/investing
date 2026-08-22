@@ -57,6 +57,14 @@ class Settings(BaseSettings):
     database_url: str = Field(
         default="sqlite+aiosqlite:///./trading_bot.db", description="Database connection URL"
     )
+    journal_db_path: str = Field(
+        default="~/kraken-bot-state/trade_journal.db",
+        description="Shared SQLite file every bot appends one row to per filled signal - "
+        "entry/exit price, the strategy's reason string (RSI/SMA values for rsi_crossover), "
+        "hold duration and return% on exits. Separate from database_url, which is one "
+        "per-bot-per-symbol DB: this file is shared across all bots/symbols on purpose, so "
+        "cross-bot patterns (e.g. correlated exits) are one query instead of an N-way join.",
+    )
 
     # Backtesting data
     kraken_data_dir: str = Field(
