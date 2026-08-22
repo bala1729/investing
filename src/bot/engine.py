@@ -579,11 +579,31 @@ class TradingEngine:
         timeframe: str = "1h",
         limit: int = 100,
         poll_interval_seconds: float = 60,
+        cycle_timeout_seconds: float = 60,
     ) -> None:
-        """Continuously poll for and act on strategy signals until the task is cancelled."""
+        """Continuously poll for and act on strategy signals until the task is cancelled.
+
+        Each cycle is bounded by cycle_timeout_seconds. Without this, a cycle
+        that stalls (observed 2026-08-15: no exception, no open socket, event
+        loop idle - reproducible even against a freshly created exchange
+        client, pointing at ccxt's async throttler rather than the network)
+        hangs forever with no recovery short of a manual kill. On timeout the
+        exchange client is torn down and recreated - a fresh ccxt instance
+        carries a fresh throttler/session, discarding whatever got wedged.
+        """
         while True:
             try:
-                await self.run_strategy_once(strategy, symbol, timeframe, limit)
+                await asyncio.wait_for(
+                    self.run_strategy_once(strategy, symbol, timeframe, limit),
+                    timeout=cycle_timeout_seconds,
+                )
+            except TimeoutError:
+                logger.error(
+                    f"Strategy cycle for {symbol} exceeded {cycle_timeout_seconds}s - "
+                    "reconnecting exchange client"
+                )
+                await self._client.close()
+                await self._client.initialize()
             except Exception:
                 logger.exception(f"Error running strategy cycle for {symbol}")
             await asyncio.sleep(poll_interval_seconds)

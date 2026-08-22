@@ -101,7 +101,25 @@ def parse_args() -> argparse.Namespace:
         "--poll-interval",
         type=float,
         default=60,
-        help="Seconds between cycles",
+        help="Seconds between cycles (ignored with --once)",
+    )
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        help="Run a single cycle and exit, instead of looping forever. Meant to be "
+        "invoked repeatedly by cron rather than left running - a long-lived process "
+        "running this same loop in-process has been observed (2026-08-15) to hang "
+        "indefinitely on its first cycle with no exception and no diagnosable cause, "
+        "despite every single-shot invocation of the identical code path completing "
+        "in seconds across many trials. A fresh process per cycle sidesteps whatever "
+        "that is: a hung cycle just wastes one cron tick instead of freezing the bot "
+        "for good.",
+    )
+    parser.add_argument(
+        "--cycle-timeout",
+        type=float,
+        default=120,
+        help="Seconds a single --once cycle may run before it's abandoned (exit code 1).",
     )
     return parser.parse_args()
 
@@ -139,13 +157,29 @@ async def main() -> None:
         risk_manager = RiskManager(settings)
         engine = TradingEngine(client, executor, risk_manager, settings)
 
-        await engine.run_forever(
-            strategy,
-            args.symbol,
-            timeframe=args.timeframe,
-            limit=args.limit,
-            poll_interval_seconds=args.poll_interval,
-        )
+        if args.once:
+            try:
+                result = await asyncio.wait_for(
+                    engine.run_strategy_once(
+                        strategy, args.symbol, timeframe=args.timeframe, limit=args.limit
+                    ),
+                    timeout=args.cycle_timeout,
+                )
+                logger.info(f"Cycle result for {args.symbol}: {result}")
+            except TimeoutError:
+                logger.error(
+                    f"Cycle for {args.symbol} exceeded {args.cycle_timeout}s - abandoning "
+                    "(cron will retry next tick)"
+                )
+                raise SystemExit(1) from None
+        else:
+            await engine.run_forever(
+                strategy,
+                args.symbol,
+                timeframe=args.timeframe,
+                limit=args.limit,
+                poll_interval_seconds=args.poll_interval,
+            )
     finally:
         await client.close()
 

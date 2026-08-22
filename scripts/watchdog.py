@@ -33,7 +33,13 @@ from src.notifications import SmsNotifier
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--pid-file", required=True, help="File containing the bot's PID")
+    parser.add_argument(
+        "--pid-file",
+        default=None,
+        help="File containing the bot's PID. Omit for a cron-driven --once bot, which has "
+        "no persistent process to check - health is then judged by --log-file freshness "
+        "alone (required in that case).",
+    )
     parser.add_argument(
         "--symbol",
         required=True,
@@ -97,10 +103,18 @@ async def open_position_amount(symbol: str) -> Decimal:
 
 async def main() -> int:
     args = parse_args()
-    label = args.label or Path(args.pid_file).stem
+    if args.pid_file is None and not args.log_file:
+        raise SystemExit("--log-file is required when --pid-file is omitted")
+    label = args.label or Path(args.log_file if args.pid_file is None else args.pid_file).stem
 
-    pid = read_pid(args.pid_file)
-    alive = pid is not None and process_is_alive(pid)
+    if args.pid_file is None:
+        # No persistent process to check (a cron-driven --once bot) - log
+        # freshness is the only available health signal.
+        pid = None
+        alive = True
+    else:
+        pid = read_pid(args.pid_file)
+        alive = pid is not None and process_is_alive(pid)
 
     stale_minutes: float | None = None
     if alive and args.log_file:
@@ -109,7 +123,7 @@ async def main() -> int:
             stale_minutes = age
 
     if alive and stale_minutes is None:
-        print(f"OK {label}: pid {pid} alive")
+        print(f"OK {label}: pid {pid} alive" if pid is not None else f"OK {label}: log fresh")
         return 0
 
     # Something is wrong. How bad depends entirely on whether money is exposed.

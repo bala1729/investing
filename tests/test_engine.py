@@ -632,3 +632,46 @@ class TestRunForever:
             await task
 
         assert call_count >= 3  # survived the first exception and kept polling
+
+    async def test_reconnects_exchange_client_after_a_stalled_cycle(
+        self, db_settings: Settings, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A cycle that never returns (2026-08-15: a real ccxt-throttler stall,
+        no exception, no open socket) must not freeze the loop forever - it
+        should time out and rebuild the exchange client instead."""
+        client = make_client()
+        executor = make_executor()
+        engine = make_engine(client, executor, db_settings)
+        strategy = ScriptedStrategy(None)
+
+        call_count = 0
+
+        async def fake_run_strategy_once(*args: object, **kwargs: object) -> EngineResult:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                await asyncio.sleep(3600)  # never completes within the timeout below
+            return EngineResult(executed=False, reason="no signal")
+
+        monkeypatch.setattr(engine, "run_strategy_once", fake_run_strategy_once)
+
+        task = asyncio.create_task(
+            engine.run_forever(
+                strategy,
+                "BTC/USD",
+                poll_interval_seconds=0,
+                cycle_timeout_seconds=0.01,
+            )
+        )
+        for _ in range(1000):
+            if call_count >= 2:
+                break
+            await asyncio.sleep(0)
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert call_count >= 2  # the stalled first cycle didn't block the second
+        client.close.assert_awaited_once()
+        client.initialize.assert_awaited()
