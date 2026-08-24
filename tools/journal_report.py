@@ -16,11 +16,25 @@ Usage:
 import argparse
 import sqlite3
 import sys
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src.config import get_settings  # noqa: E402
+
+
+def _parse_dt(iso_string: str) -> datetime:
+    """Parse a journal row's created_at, normalized to UTC-aware.
+
+    record_execution() always writes timezone-aware UTC timestamps, but
+    backfill_journal.py preserves each source trade's original created_at
+    string as-is - and SQLite drops tzinfo on round-trip even on a column
+    declared timezone=True (same issue as Position.opened_at), so backfilled
+    rows come back naive. Comparing a naive and an aware datetime raises
+    TypeError, so every row is normalized here before any subtraction.
+    """
+    dt = datetime.fromisoformat(iso_string)
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
 
 
 def main() -> None:
@@ -77,13 +91,13 @@ def main() -> None:
     for i, r in enumerate(rows):
         if used[i]:
             continue
-        t0 = datetime.fromisoformat(r["created_at"])
+        t0 = _parse_dt(r["created_at"])
         group = [r]
         used[i] = True
         for j in range(i + 1, len(rows)):
             if used[j]:
                 continue
-            tj = datetime.fromisoformat(rows[j]["created_at"])
+            tj = _parse_dt(rows[j]["created_at"])
             if (tj - t0).total_seconds() <= window:
                 group.append(rows[j])
                 used[j] = True
