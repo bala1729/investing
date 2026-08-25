@@ -666,10 +666,15 @@ class TestRunForever:
                 cycle_timeout_seconds=0.01,
             )
         )
-        for _ in range(1000):
-            if call_count >= 2:
-                break
-            await asyncio.sleep(0)
+        # Unlike the exception-retry test above, this one needs the *real* 0.01s
+        # cycle_timeout_seconds to actually elapse before asyncio.wait_for raises -
+        # a bare asyncio.sleep(0) only yields to the loop, it doesn't advance the
+        # wall clock, so a fixed count of them isn't guaranteed to cover 0.01s of
+        # real time on a slower/busier runner (this was reliably green locally but
+        # failed every CI run: real sleeps are needed here, not just yields).
+        deadline = asyncio.get_event_loop().time() + 5.0
+        while call_count < 2 and asyncio.get_event_loop().time() < deadline:
+            await asyncio.sleep(0.01)
 
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
