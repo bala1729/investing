@@ -218,14 +218,24 @@ class TradingEngine:
                         )
                     if closed is not None:
                         closed_pnl = (exit_price - position.entry_price) * order.filled_amount
-                        # SQLite drops tzinfo on round-trip even though the column is
-                        # declared timezone=True - opened_at comes back naive, but it was
-                        # always written as UTC (see Position.opened_at's default), so treat
-                        # a naive value as UTC rather than let subtraction raise.
-                        opened_at = position.opened_at
-                        if opened_at.tzinfo is None:
-                            opened_at = opened_at.replace(tzinfo=UTC)
-                        hold_seconds = (datetime.now(UTC) - opened_at).total_seconds()
+                        # Position.opened_at is NOT "when this open position started" - on
+                        # create_or_update() an *existing* row (i.e. every re-entry after the
+                        # first-ever one for this symbol) only entry_price/amount/side get
+                        # touched, opened_at stays frozen at whenever the row was first
+                        # created. Using it here would silently overstate hold time by however
+                        # long the symbol's been through prior close/reopen cycles. The trades
+                        # table has no such staleness - the most recent BUY for this symbol is
+                        # unambiguously the fill that opened the position this SELL just closed
+                        # (one open position per symbol, enforced above).
+                        recent_trades = await uow.trades.get_by_symbol(signal.symbol, limit=2)
+                        entry_trade = next((t for t in recent_trades if t.side == "buy"), None)
+                        if entry_trade is not None:
+                            entry_time = entry_trade.created_at
+                            # Same SQLite tzinfo-drop-on-round-trip as opened_at above; it was
+                            # always written as UTC (see TradeRepository.create's Trade()).
+                            if entry_time.tzinfo is None:
+                                entry_time = entry_time.replace(tzinfo=UTC)
+                            hold_seconds = (datetime.now(UTC) - entry_time).total_seconds()
                         if position.entry_price:
                             return_pct = float(
                                 (exit_price - position.entry_price)

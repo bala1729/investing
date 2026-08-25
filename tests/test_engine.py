@@ -1,7 +1,10 @@
 """Tests for TradingEngine: the risk-gated bridge from signal to order."""
 
 import asyncio
+import sqlite3
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pandas as pd
@@ -675,3 +678,60 @@ class TestRunForever:
         assert call_count >= 2  # the stalled first cycle didn't block the second
         client.close.assert_awaited_once()
         client.initialize.assert_awaited()
+
+
+class TestJournalHoldSeconds:
+    async def test_uses_the_matching_buy_trade_not_the_position_rows_first_ever_open(
+        self, db_settings: Settings
+    ) -> None:
+        """Position.opened_at freezes at a symbol's first-ever entry and never resets
+        on a later re-entry - create_or_update() only touches entry_price/amount/side
+        on an existing row (see engine.py's comment at the fix). Journaled hold_seconds
+        must come from the matching BUY trade instead, or every re-entry after the
+        first would report an absurdly inflated hold time."""
+        client = make_client(last_price=Decimal("100"))
+        executor = make_executor()
+        engine = make_engine(client, executor, db_settings)
+
+        # First round trip: opens the position row the bug would have pinned on.
+        # (order_id must be distinct per fill - orders.order_id is unique.)
+        executor.execute_market_order.return_value = make_order(order_id="order_1")
+        await engine.process_signal(buy_signal())
+        executor.execute_market_order.return_value = make_order(
+            order_id="order_2", side=OrderSide.SELL, average_fill_price=Decimal("110")
+        )
+        await engine.process_signal(sell_signal())
+
+        # Backdate opened_at far into the past - exactly the staleness
+        # create_or_update leaves behind on a real multi-cycle bot. If
+        # hold_seconds used this field, the second round trip below would
+        # report ~30 days instead of the milliseconds it actually took.
+        async with UnitOfWork() as uow:
+            position = await uow.positions.get_by_symbol("BTC/USD")
+            assert position is not None
+            position.opened_at = datetime.now(UTC) - timedelta(days=30)
+            await uow.commit()
+
+        # Second round trip: fresh entry, closed moments later.
+        executor.execute_market_order.return_value = make_order(
+            order_id="order_3", side=OrderSide.BUY
+        )
+        await engine.process_signal(buy_signal())
+        executor.execute_market_order.return_value = make_order(
+            order_id="order_4", side=OrderSide.SELL, average_fill_price=Decimal("120")
+        )
+        await engine.process_signal(sell_signal())
+
+        conn = sqlite3.connect(str(Path(db_settings.journal_db_path).expanduser()))
+        try:
+            rows = conn.execute(
+                "SELECT hold_seconds FROM journal WHERE symbol = 'BTC/USD' AND side = 'sell' "
+                "ORDER BY id"
+            ).fetchall()
+        finally:
+            conn.close()
+
+        assert len(rows) == 2
+        # The second exit's hold time reflects only the second entry - seconds,
+        # not the ~30-day-stale opened_at the bug would have used.
+        assert rows[1][0] < 60
