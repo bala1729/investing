@@ -198,43 +198,6 @@ class Position(Base):
         }
 
 
-class PeakEquity(Base):
-    """Per-symbol high-water mark of account equity, used for drawdown limits.
-
-    A separate table rather than a column on Position because it must outlive
-    any individual position: the drawdown limit is meant to measure the decline
-    from the best the account has ever been, and a position row is zeroed the
-    moment a trade closes.
-
-    Persisting this at all is the point. It used to live in a dict on
-    TradingEngine, so every restart reset the high-water mark to whatever equity
-    happened to be at that moment - which silently disarmed max_drawdown_pct
-    exactly when it mattered, since a bot is most likely to be restarted after
-    something went wrong.
-
-    New table rather than a new column, so create_all() adds it to existing
-    databases without a migration.
-    """
-
-    __tablename__ = "peak_equity"
-
-    symbol: Mapped[str] = mapped_column(String(32), primary_key=True)
-    peak_equity: Mapped[Decimal] = mapped_column(Numeric(precision=18, scale=8))
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True),
-        default=lambda: datetime.now(UTC),
-        onupdate=lambda: datetime.now(UTC),
-    )
-
-    def to_dict(self) -> dict[str, Any]:
-        """Convert to dictionary."""
-        return {
-            "symbol": self.symbol,
-            "peak_equity": str(self.peak_equity),
-            "updated_at": self.updated_at.isoformat(),
-        }
-
-
 class PaperBalance(Base):
     """Persisted paper-trading balances, so a restart resumes rather than resets.
 

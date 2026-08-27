@@ -5,6 +5,7 @@ that ignored fees, a drawdown limit silently disarmed by a restart, and no way
 to stop new risk without killing a process that is managing an open position.
 """
 
+import sqlite3
 from decimal import Decimal
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -24,6 +25,7 @@ from src.exchange.executor import (
     OrderType,
     PaperTradingSimulator,
 )
+from src.portfolio_equity import record_and_get_portfolio_equity
 from src.risk.manager import RiskManager
 
 
@@ -103,41 +105,58 @@ class TestPaperFees:
             PaperTradingSimulator(make_client(), fee_pct=Decimal("-1"))
 
 
-class TestPeakEquityPersistence:
-    """The drawdown limit measures decline from the account's best. Holding that
-    in memory meant every restart reset it - disarming the limit precisely when
-    a bot had just been restarted after trouble."""
+class TestPortfolioEquityTracking:
+    """The drawdown limit measures decline from the account's best. Two separate
+    things used to break this: (1) holding it in memory meant every restart
+    reset it - disarming the limit precisely when a bot had just been
+    restarted after trouble; (2) persisting it *per symbol* (the original fix
+    for (1)) meant each bot compared its own balance+position as if that were
+    the whole account, when in reality every live bot here shares one Kraken
+    account and one free-USD balance - a bot sitting flat would look like it
+    had suffered a real drawdown the moment any *other* bot drew capital out
+    of that shared balance into a new position. Two real live incidents
+    (kraken-bot-state/RESTART.md, 2026-08-17 and 2026-08-27) before this
+    module replaced the per-symbol table with one true cross-bot total."""
 
-    async def test_records_and_returns_the_mark(self, db_settings: Settings) -> None:
-        async with UnitOfWork() as uow:
-            assert await uow.peak_equity.record("BTC/USD", Decimal("10000")) == Decimal("10000")
-            await uow.commit()
-        async with UnitOfWork() as uow:
-            assert await uow.peak_equity.get("BTC/USD") == Decimal("10000")
+    async def test_records_and_returns_the_mark(self, tmp_path: Path) -> None:
+        db = str(tmp_path / "portfolio.db")
+        current, peak = record_and_get_portfolio_equity(
+            db, "BTC/USD", Decimal("0"), Decimal("10000")
+        )
+        assert current == Decimal("10000")
+        assert peak == Decimal("10000")
 
-    async def test_raises_to_a_new_high(self, db_settings: Settings) -> None:
-        async with UnitOfWork() as uow:
-            await uow.peak_equity.record("BTC/USD", Decimal("10000"))
-            assert await uow.peak_equity.record("BTC/USD", Decimal("12000")) == Decimal("12000")
-            await uow.commit()
+    async def test_raises_to_a_new_high(self, tmp_path: Path) -> None:
+        db = str(tmp_path / "portfolio.db")
+        record_and_get_portfolio_equity(db, "BTC/USD", Decimal("0"), Decimal("10000"))
+        _, peak = record_and_get_portfolio_equity(db, "BTC/USD", Decimal("0"), Decimal("12000"))
+        assert peak == Decimal("12000")
 
-    async def test_never_lowers(self, db_settings: Settings) -> None:
-        async with UnitOfWork() as uow:
-            await uow.peak_equity.record("BTC/USD", Decimal("12000"))
-            assert await uow.peak_equity.record("BTC/USD", Decimal("9000")) == Decimal("12000")
-            await uow.commit()
-        async with UnitOfWork() as uow:
-            assert await uow.peak_equity.get("BTC/USD") == Decimal("12000")
+    async def test_never_lowers(self, tmp_path: Path) -> None:
+        db = str(tmp_path / "portfolio.db")
+        record_and_get_portfolio_equity(db, "BTC/USD", Decimal("0"), Decimal("12000"))
+        _, peak = record_and_get_portfolio_equity(db, "BTC/USD", Decimal("0"), Decimal("9000"))
+        assert peak == Decimal("12000")
 
-    async def test_unknown_symbol_is_none(self, db_settings: Settings) -> None:
-        async with UnitOfWork() as uow:
-            assert await uow.peak_equity.get("NOPE/USD") is None
+    async def test_sums_every_bots_position_value_not_just_this_ones(
+        self, tmp_path: Path
+    ) -> None:
+        """The actual bug, reproduced directly: a bot sitting flat (its own
+        position_value is 0) must still see the true account total, not just
+        its own empty slice of it - other bots' most-recently-recorded
+        position values count too."""
+        db = str(tmp_path / "portfolio.db")
+        record_and_get_portfolio_equity(db, "ETH/USD", Decimal("50"), Decimal("300"))
+        record_and_get_portfolio_equity(db, "SOL/USD", Decimal("20"), Decimal("300"))
+        current, _ = record_and_get_portfolio_equity(db, "BTC/USD", Decimal("0"), Decimal("300"))
+        # 300 shared free USD + ETH's 50 + SOL's 20 + BTC's own 0
+        assert current == Decimal("370")
 
     async def test_survives_a_new_engine_instance(self, db_settings: Settings) -> None:
         """A fresh TradingEngine stands in for a process restart."""
-        async with UnitOfWork() as uow:
-            await uow.peak_equity.record("BTC/USD", Decimal("50000"))
-            await uow.commit()
+        record_and_get_portfolio_equity(
+            db_settings.portfolio_equity_db_path, "BTC/USD", Decimal("0"), Decimal("50000")
+        )
 
         client = make_client(Decimal("100"))
         executor = AsyncMock()
@@ -151,6 +170,90 @@ class TestPeakEquityPersistence:
 
         assert result.executed is False
         assert "drawdown" in (result.reason or "").lower()
+
+    async def test_a_flat_bots_own_balance_no_longer_false_positives_a_drawdown(
+        self, db_settings: Settings
+    ) -> None:
+        """End-to-end reproduction of the exact 2026-08-27 incident: BTC's peak
+        was set while the account was "whole" (one bot, no capital drawn out
+        yet); other bots then drew most of the free-USD balance into their own
+        positions. Under the old per-symbol tracking, BTC's own balance+0
+        looked like a >10% drawdown from that stale peak. With the shared
+        total, the capital other bots hold is still counted, so it doesn't."""
+        portfolio_db = db_settings.portfolio_equity_db_path
+        # The peak, set once while "whole": 358 free USD, nothing deployed yet.
+        record_and_get_portfolio_equity(portfolio_db, "BTC/USD", Decimal("0"), Decimal("358"))
+        # Other bots then each drew capital out of that same shared balance
+        # into their own positions - by the time BTC checks again, only ~300
+        # of the original 358 is still free USD, the rest sits in ETH/SOL/DOGE.
+        record_and_get_portfolio_equity(portfolio_db, "ETH/USD", Decimal("20"), Decimal("300"))
+        record_and_get_portfolio_equity(portfolio_db, "SOL/USD", Decimal("18"), Decimal("300"))
+        record_and_get_portfolio_equity(portfolio_db, "DOGE/USD", Decimal("15"), Decimal("300"))
+
+        client = make_client(Decimal("100"))
+        executor = AsyncMock()
+        executor.get_balance.return_value = Decimal("300")  # the current shared free USD
+        executor.execute_market_order.return_value = Order(
+            id="order_1",
+            symbol="BTC/USD",
+            side=OrderSide.BUY,
+            order_type=OrderType.MARKET,
+            amount=Decimal("0.01"),
+            price=None,
+            status=OrderStatus.FILLED,
+            filled_amount=Decimal("0.01"),
+            average_fill_price=Decimal("100"),
+            exchange_order_id="ex_1",
+            is_paper=True,
+        )
+        engine = TradingEngine(client, executor, RiskManager(db_settings), db_settings)
+
+        result = await engine.process_signal(
+            Signal(symbol="BTC/USD", side=OrderSide.BUY, strategy="t", reason="t")
+        )
+
+        # 300 + 20 + 18 + 15 = 353, only ~1.4% off the 358 peak - well inside
+        # the 10% default max_drawdown_pct, so the signal must proceed past
+        # the drawdown gate (it may still not execute for other reasons, e.g.
+        # sizing, but "drawdown" must not be why).
+        assert "drawdown" not in (result.reason or "").lower()
+
+    async def test_snapshot_refreshes_even_on_a_short_circuited_cycle(
+        self, db_settings: Settings
+    ) -> None:
+        """A bot sitting "already holding" short-circuits process_signal on
+        every cycle in between actual entries/exits - real for hours or days
+        at this account's cadence. The snapshot write must not be gated
+        behind that early return, or a long-held position's contribution to
+        the shared total goes stale the same way the old per-symbol table
+        did, just slower (caught locally: moving the write before the
+        early-return gates is what actually fixed this, not just adding the
+        shared file)."""
+        async with UnitOfWork() as uow:
+            await uow.positions.create_or_update(
+                symbol="BTC/USD", side="long", amount=Decimal("2"), entry_price=Decimal("100")
+            )
+            await uow.commit()
+
+        client = make_client(Decimal("150"))  # position now worth 2 * 150 = 300
+        executor = AsyncMock()
+        executor.get_balance.return_value = Decimal("50")
+        engine = TradingEngine(client, executor, RiskManager(db_settings), db_settings)
+
+        result = await engine.process_signal(
+            Signal(symbol="BTC/USD", side=OrderSide.BUY, strategy="t", reason="t")
+        )
+
+        assert result.executed is False
+        assert "Already holding" in (result.reason or "")
+
+        conn = sqlite3.connect(db_settings.portfolio_equity_db_path)
+        row = conn.execute(
+            "SELECT position_value FROM bot_snapshots WHERE symbol = 'BTC/USD'"
+        ).fetchone()
+        conn.close()
+        assert row is not None
+        assert Decimal(row[0]) == Decimal("300")
 
 
 class TestKillSwitch:
@@ -253,25 +356,6 @@ class TestAlertingNeverBreaksTrading:
 
         assert result.executed is True
         notifier.send.assert_awaited_once()
-
-
-class TestPeakEquitySerialisation:
-    async def test_to_dict(self, db_settings: Settings) -> None:
-        async with UnitOfWork() as uow:
-            await uow.peak_equity.record("BTC/USD", Decimal("123.45"))
-            await uow.commit()
-        async with UnitOfWork() as uow:
-            row = await uow.peak_equity.get("BTC/USD")
-        assert row == Decimal("123.45")
-
-        from src.database.models import PeakEquity
-
-        d = PeakEquity(symbol="BTC/USD", peak_equity=Decimal("123.45"),
-                       updated_at=__import__("datetime").datetime.now(
-                           __import__("datetime").UTC)).to_dict()
-        assert d["symbol"] == "BTC/USD"
-        assert d["peak_equity"] == "123.45"
-        assert "updated_at" in d
 
 
 class TestPaperBalancePersistence:

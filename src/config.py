@@ -65,6 +65,15 @@ class Settings(BaseSettings):
         "per-bot-per-symbol DB: this file is shared across all bots/symbols on purpose, so "
         "cross-bot patterns (e.g. correlated exits) are one query instead of an N-way join.",
     )
+    portfolio_equity_db_path: str = Field(
+        default="~/kraken-bot-state/portfolio_equity.db",
+        description="Shared SQLite file tracking true cross-bot equity for the drawdown gate "
+        "(see src/portfolio_equity.py). Every bot upserts its own latest position value here "
+        "each cycle; current equity for the drawdown check is the shared free-USD balance plus "
+        "every bot's latest known position value, compared against one high-water mark that "
+        "only ratchets up - not each bot's own siloed balance+position, which went stale the "
+        "moment any *other* bot drew down the same shared USD balance.",
+    )
 
     # Backtesting data
     kraken_data_dir: str = Field(

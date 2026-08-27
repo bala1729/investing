@@ -21,6 +21,7 @@ from src.exchange.executor import Order, OrderExecutor, OrderSide, OrderStatus
 from src.exchange.kraken import KrakenClient
 from src.journal import record_execution
 from src.notifications import SmsNotifier, format_fill_alert
+from src.portfolio_equity import record_and_get_portfolio_equity
 from src.risk.manager import RiskManager
 
 
@@ -40,9 +41,10 @@ class TradingEngine:
       - One open position per symbol. A BUY signal for a symbol that's
         already held is skipped rather than pyramided into; a SELL with no
         open position is skipped rather than erroring.
-      - Peak equity (for drawdown checks) is persisted per symbol in the
-        peak_equity table, so the high-water mark survives restarts. It is
-        never lowered; clearing that row is the only way to reset it.
+      - Peak equity (for drawdown checks) is tracked across every bot sharing
+        this account, not per symbol - see src/portfolio_equity.py. Persisted
+        so the high-water mark survives restarts, and never lowered; editing
+        that file's portfolio_peak_equity row is the only way to reset it.
       - An explicit `quantity` (e.g. from a TradingView webhook) is used
         as-is; the risk manager still gates *whether* the trade happens
         (drawdown/exposure) but does not clamp an externally-specified size.
@@ -97,6 +99,47 @@ class TradingEngine:
         # so "has a position" means amount > 0, not merely a non-None row.
         has_open_position = position is not None and position.amount > 0
 
+        position_value = (
+            position.amount * reference_price
+            if has_open_position and position is not None
+            else Decimal("0")
+        )
+        # Refreshed every cycle, unconditionally - deliberately ahead of the
+        # early-return gates below, not just on a cycle that reaches a real
+        # entry/exit decision. A bot sitting holding for hours (the common
+        # case: "already holding" short-circuits every cycle in between)
+        # would otherwise never update its contribution to the shared total,
+        # silently going stale exactly the way the old per-symbol table did -
+        # just slower. Persisted rather than in-memory for the same reason as
+        # before: a restart must not reset the high-water mark to whatever
+        # equity happens to be at that moment, disarming the drawdown limit
+        # exactly when it matters. Shared across every bot rather than kept
+        # per-symbol: this bot's own balance+position is only a sliver of the
+        # real account (one Kraken account, four bots), so a peak recorded
+        # from that sliver alone goes stale the instant any *other* bot draws
+        # down the same shared USD balance into a new position - see
+        # src/portfolio_equity.py for the two real false drawdown-breaches
+        # this caused before the fix.
+        try:
+            current_equity, peak_equity = await asyncio.to_thread(
+                record_and_get_portfolio_equity,
+                self._settings.portfolio_equity_db_path,
+                signal.symbol,
+                position_value,
+                balance,
+            )
+        except Exception:
+            # This bot's own balance+position is a strict subset of the true
+            # total, so falling back to it can only make the drawdown check
+            # MORE cautious this cycle, never mask a real drawdown by
+            # undercounting - safe to fail open rather than block trading on
+            # a local sqlite hiccup.
+            logger.exception(
+                f"Portfolio equity tracking failed for {signal.symbol} - falling back to "
+                "this bot's own balance+position for this cycle"
+            )
+            current_equity = peak_equity = balance + position_value
+
         # Kill switch gates entries only. Blocking an exit would trap capital in
         # exactly the situation someone reaches for a kill switch.
         if signal.side == OrderSide.BUY and self._kill_switch_engaged():
@@ -116,20 +159,6 @@ class TradingEngine:
             return EngineResult(
                 executed=False, reason=f"No open position in {signal.symbol} to sell"
             )
-
-        position_value = (
-            position.amount * reference_price
-            if has_open_position and position is not None
-            else Decimal("0")
-        )
-        current_equity = balance + position_value
-        # Persisted rather than in-memory: a restart used to reset the mark to
-        # whatever equity happened to be at that moment, which disarmed the
-        # drawdown limit exactly when it mattered - a bot is most likely to be
-        # restarted right after something went wrong.
-        async with UnitOfWork() as uow:
-            peak_equity = await uow.peak_equity.record(signal.symbol, current_equity)
-            await uow.commit()
 
         decision = self._risk_manager.evaluate_signal(
             signal=signal,

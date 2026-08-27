@@ -20,10 +20,15 @@ async def db_settings(
     are reset before and after to avoid leaking state between tests.
     """
     db_path = tmp_path / "test.db"
-    # Also isolates journal_db_path (via env, so it's picked up by every Settings(...)
-    # a test constructs, not just this one) - without it, TradingEngine._record_journal
-    # writes real rows into the production journal at its default path.
+    # Also isolates journal_db_path and portfolio_equity_db_path (via env, so both
+    # are picked up by every Settings(...) a test constructs, not just this one) -
+    # without this, TradingEngine writes real rows into the production journal and
+    # portfolio-equity files at their default paths (caught happening for both,
+    # separately, each the hard way: a test run left fake trades in the real
+    # journal, and separately left a stale peak_equity in the real portfolio file
+    # that then made an unrelated later test miscompute a drawdown).
     monkeypatch.setenv("JOURNAL_DB_PATH", str(tmp_path / "journal.db"))
+    monkeypatch.setenv("PORTFOLIO_EQUITY_DB_PATH", str(tmp_path / "portfolio_equity.db"))
     settings = Settings(_env_file=None, database_url=f"sqlite+aiosqlite:///{db_path}")
 
     monkeypatch.setattr(models_module, "get_settings", lambda: settings)
