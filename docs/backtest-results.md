@@ -1693,3 +1693,116 @@ ATOM and the four live symbols were.
 candidate but with the single-window caveat noted above, same tier as NEAR/SUI/CRV from the
 2026-08-11 batch. `SUI`/`TAO`/`AKE`/`AVNT` remain deferred (unchanged or too-new history). `LINK`/
 `SOL` need no new evaluation - already validated.
+
+---
+
+## 2026-08-27 — Position-size sweep: how drawdown scales if the live account sizes up
+
+**Why this run exists.** After a good run (all four live bots up since 2026-08-18, +$14.52
+realized on the 2026-08-22 exit, journal showing +5.94% avg return across 14 closed trades),
+asked whether it's safe to raise position size and add more capital. Every number in this file up
+to now was run at `position_size_pct=100` (spend the whole balance every trade, full compounding)
+- explicitly flagged throughout as unrealistic for real execution, and *not* what any live bot
+actually runs at. The live account runs `risk_per_trade_pct=1.0` capped by
+`max_position_size_pct=5.0` - with `default_stop_loss_pct=2.0`, the risk-based calculation alone
+would size at 50% of equity, so the 5% cap is what actually binds; live trades have consistently
+sized to ~5% of balance, confirming this. No prior sweep ever varied this dimension - `tools/
+sweep.py` hardcoded 100% sizing. Added `position_size_pct` as a sweepable field (default 100,
+backward compatible with every existing config) and ran it across the exact four live symbols and
+the exact live strategy (`rsi_m2`, `4h`), same fee/slippage assumptions as every other sweep here.
+
+**Setup:** `tools/examples/position_size.json` - `control_100pct` (reproduces the existing
+100%-sizing baseline exactly, e.g. SOL 2018+/2020+ = 135,437.78%, confirmed matching the
+2026-08-10 entry) plus `size5`/`10`/`15`/`20`/`30`/`50`, each across `2018+`/`2020+`/`2022+`/
+`full`. Command: `SWEEP_SYMBOLS="BTC/USD,ETH/USD,SOL/USD,DOGE/USD" uv run python tools/sweep.py
+position_size_sweep tools/examples/position_size.json`.
+
+### Full-history vs the skeptical `2022+` window, all four live symbols
+
+#### BTC/USD
+
+| Size % | Full-history return | Full-history max DD | 2022+ return | 2022+ max DD |
+|---|---|---|---|---|
+| 100% | 968,952.41% | 27.04% | 328.25% | 24.93% |
+| 5% (current live) | 66.36% | 1.54% | 8.50% | 1.41% |
+| 10% | 175.17% | 3.05% | 17.60% | 2.80% |
+| 15% | 352.62% | 4.54% | 27.34% | 4.17% |
+| 20% | 640.38% | 6.02% | 37.76% | 5.52% |
+| 30% | 1,849.02% | 8.90% | 60.76% | 8.18% |
+| 50% | 12,579.15% | 14.44% | 116.51% | 13.29% |
+
+#### ETH/USD
+
+| Size % | Full-history return | Full-history max DD | 2022+ return | 2022+ max DD |
+|---|---|---|---|---|
+| 100% | 12,703,157.69% | 36.25% | 519.49% | 26.88% |
+| 5% (current live) | 98.86% | 3.19% | 11.04% | 1.53% |
+| 10% | 290.34% | 6.03% | 23.10% | 3.04% |
+| 15% | 656.79% | 8.60% | 36.27% | 4.53% |
+| 20% | 1,349.99% | 10.96% | 50.63% | 6.00% |
+| 30% | 5,046.97% | 15.17% | 83.22% | 8.87% |
+| 50% | 57,198.68% | 22.27% | 166.53% | 14.39% |
+
+#### SOL/USD
+
+| Size % | Full-history return | Full-history max DD | 2022+ return | 2022+ max DD |
+|---|---|---|---|---|
+| 100% | 135,437.78% | 27.63% | 25,136.55% | 27.63% |
+| 5% (current live) | 49.51% | 1.68% | 35.92% | 1.68% |
+| 10% | 122.44% | 3.33% | 84.09% | 3.33% |
+| 15% | 229.34% | 4.94% | 148.47% | 4.94% |
+| 20% | 385.34% | 6.51% | 234.22% | 6.51% |
+| 30% | 939.63% | 9.55% | 498.72% | 9.55% |
+| 50% | 4,426.29% | 15.25% | 1,749.01% | 15.25% |
+
+#### DOGE/USD
+
+| Size % | Full-history return | Full-history max DD | 2022+ return | 2022+ max DD |
+|---|---|---|---|---|
+| 100% | 1,614,453.85% | 52.15% | 4,373.01% | 44.40% |
+| 5% (current live) | 103.83% | 14.90% | 25.09% | 2.95% |
+| 10% | 293.12% | 22.89% | 55.81% | 5.79% |
+| 15% | 627.78% | 28.00% | 93.26% | 8.54% |
+| 20% | 1,204.58% | 31.64% | 138.75% | 11.21% |
+| 30% | 3,786.02% | 36.65% | 260.26% | 16.28% |
+| 50% | 27,510.82% | 42.85% | 686.29% | 25.53% |
+
+### Key takeaways
+
+1. **Drawdown scales faster than position size, on every symbol.** Going from today's 5% to 15%
+   (3x) roughly triples-to-quadruples max drawdown, not just triples the size - e.g. BTC 2022+:
+   1.41% → 4.17% (3.0x), ETH: 1.53% → 4.53% (3.0x), consistent with compounding losses the same
+   way it compounds gains.
+2. **DOGE has a fat tail the other three don't.** Its full-history worst-case drawdown at *today's
+   5% sizing already* (14.90%) exceeds what BTC/ETH/SOL show even at 15-20% sizing, and on its own
+   breaches the account's `max_drawdown_pct=10.0` gate. That event is old - the `2022+` window
+   shows DOGE at 2.95%, in line with the other three - but full-history is the honest worst case,
+   and the same kind of move could recur. The other three symbols show no such gap between recent
+   and full-history drawdown (SOL's is identical across both, meaning its worst drawdown already
+   sits inside `2022+`).
+3. **20% sizing is roughly where ETH and DOGE start pressuring the account's own 10% drawdown
+   gate**, even in the skeptical recent window (ETH 6.00%, DOGE 11.21% - already over). BTC and
+   SOL have more headroom (8-9% max DD at 30%). A uniform position-size increase across all four
+   is not equally safe for all four.
+4. **The gate only protects new entries, not open ones.** `max_drawdown_pct` blocks new BUYs once
+   breached, but exits are never blocked and none of these live bots run stop-loss enforcement
+   (`StopEnforcement.OFF`, matching every other live launch note in `kraken-bot-state/RESTART.md`)
+   - an open position at a larger size can still ride these backtested drawdowns down before the
+   RSI signal itself reverses to exit.
+5. **The return side is a multi-year compounding effect, not a two-week one.** The account has 14
+   closed trades since 2026-08-18. The large return multiples above accrue over years of
+   compounding; the drawdown risk from a bigger position is immediate - it applies to the very
+   next losing trade, not a payoff that shows up after years of runway.
+
+### Outcome
+
+Sizing up is not unsupported by the data, but not as a uniform, immediate move either.
+Recommendation: a moderate increase for BTC/ETH/SOL (10-15% keeps `2022+` max DD in the 3-5%
+range, well inside the account's own 10% gate) is reasonably backed; DOGE should not scale the
+same way given its full-history tail risk, or should be evaluated separately with a smaller size
+or a stop-loss added specifically for it. Any increase beyond ~20% starts meaningfully eating into
+the account's own drawdown tolerance for ETH and DOGE specifically. Not yet evaluated: what
+`add more funds` actually changes here - deploying more capital *without* raising
+`max_position_size_pct` doesn't change this risk profile at all (it scales every dollar amount up
+by the same factor, leaving the percentages in this table untouched); only raising the percentage
+itself does.

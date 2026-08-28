@@ -31,12 +31,20 @@ Config is a JSON list of objects:
        "windows": ["full"], "no_mtf": true},
 
       {"arm": "4h_only", "strategy": "rsi_m2", "timeframe": "1h",
-       "windows": ["full"], "mtf": ["4h"]}
+       "windows": ["full"], "mtf": ["4h"]},
+
+      {"arm": "size20", "strategy": "rsi_m2", "timeframe": "4h",
+       "windows": ["full"], "position_size_pct": 20}
     ]
 
 `arm` labels a variant in the output. `no_mtf` and `mtf` change the confirmation
 ladder for a run *without* touching MTF_CONFIRMATION_MAP, so a hypothesis can be
-tested while the shipped map stays as it is.
+tested while the shipped map stays as it is. `position_size_pct` (default 100)
+is the fraction of available balance spent per entry - every headline number in
+docs/backtest-results.md was run at the 100% default, which is *not* what any
+live bot actually runs at (see Settings.max_position_size_pct); sweep this
+explicitly rather than assuming the 100%-compounding figures say anything about
+a specific live sizing.
 
 Always include a control arm that reproduces an existing logged baseline, and
 check it matches before trusting the comparison - several results in this
@@ -129,6 +137,7 @@ def run_one(
     stops: dict[str, Any] | None = None,
     no_mtf: bool = False,
     mtf_override: list[str] | None = None,
+    position_size_pct: Decimal = Decimal("100"),
 ) -> dict[str, Any] | None:
     entry = window_slice(frames[timeframe], start, end)
     if len(entry) < 60:
@@ -157,6 +166,7 @@ def run_one(
         starting_balance=Decimal("10000"),
         fee_pct=FEE,
         slippage_pct=SLIP,
+        position_size_pct=position_size_pct,
         stop_loss_pct=Decimal(str(stops.get("stop", 0))),
         take_profit_pct=Decimal(str(stops.get("target", 0))),
         trailing_trigger_pct=Decimal(str(stops.get("trigger", 0))),
@@ -172,6 +182,7 @@ def run_one(
         "timeframe": timeframe,
         "window": f"{entry.index[0].date()}..{entry.index[-1].date()}",
         "candles": len(entry),
+        "position_size_pct": float(position_size_pct),
         "return_pct": float(result.total_return_pct),
         "buy_hold_pct": float(buy_and_hold_return_pct(entry)),
         "trades": len(result.trades),
@@ -206,6 +217,7 @@ def main() -> int:
                 row = run_one(
                     c["strategy"], symbol, c["timeframe"], frames, start, end,
                     c.get("stops"), c.get("no_mtf", False), c.get("mtf"),
+                    Decimal(str(c.get("position_size_pct", 100))),
                 )
                 if row:
                     row["window_name"] = wname

@@ -1,0 +1,16 @@
+[
+ {"arm": "control_100pct", "strategy": "rsi_m2", "timeframe": "4h",
+  "windows": ["2018+", "2020+", "2022+", "full"]},
+ {"arm": "size5", "strategy": "rsi_m2", "timeframe": "4h",
+  "windows": ["2018+", "2020+", "2022+", "full"], "position_size_pct": 5},
+ {"arm": "size10", "strategy": "rsi_m2", "timeframe": "4h",
+  "windows": ["2018+", "2020+", "2022+", "full"], "position_size_pct": 10},
+ {"arm": "size15", "strategy": "rsi_m2", "timeframe": "4h",
+  "windows": ["2018+", "2020+", "2022+", "full"], "position_size_pct": 15},
+ {"arm": "size20", "strategy": "rsi_m2", "timeframe": "4h",
+  "windows": ["2018+", "2020+", "2022+", "full"], "position_size_pct": 20},
+ {"arm": "size30", "strategy": "rsi_m2", "timeframe": "4h",
+  "windows": ["2018+", "2020+", "2022+", "full"], "position_size_pct": 30},
+ {"arm": "size50", "strategy": "rsi_m2", "timeframe": "4h",
+  "windows": ["2018+", "2020+", "2022+", "full"], "position_size_pct": 50}
+]
