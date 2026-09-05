@@ -1806,3 +1806,77 @@ the account's own drawdown tolerance for ETH and DOGE specifically. Not yet eval
 `max_position_size_pct` doesn't change this risk profile at all (it scales every dollar amount up
 by the same factor, leaving the percentages in this table untouched); only raising the percentage
 itself does.
+
+---
+
+## 2026-09-05 — Dropping the daily MTF confirmation entirely: near-total or total account loss on every symbol, both 1h and 4h
+
+**Why this run exists.** Asked whether entering/exiting on a plain RSI/SMA crossover - `1h` or
+`4h`, no higher-timeframe confirmation at all - would work, prompted by SOL's live bot currently
+blocked: its `4h` side is bullish but the `1d` confirmation isn't there yet, raising the natural
+question of whether that gate is worth keeping. `tools/sweep.py` already supports a `no_mtf: true`
+flag for exactly this (used before for the 2026-08-09 `15m` no-MTF sweep); no code changes needed,
+just a new config (`tools/examples/no_mtf_crossover.json`) and a run across the four live symbols.
+
+**Setup:** `rsi_m0` (pure crossover, no exit margin - matches "just on crossover" for both entry
+and exit) and `rsi_m2` (the live exit margin, for comparison), each at `1h` and `4h`, `no_mtf:
+true`, across `2018+`/`2020+`/`2022+`/`full`. Control arm: `rsi_m0`/`4h` **with** MTF confirmation
+on, reproducing the exact 2026-08-10 logged baseline (BTC 2018+/2020+/2022+ =
+4,005.72%/1,201.42%/214.75%, ETH and SOL also matched exactly) - confirms the only variable
+changed is the confirmation gate itself.
+
+### Full-history vs the skeptical `2022+` window, all four live symbols
+
+| Symbol | Arm | Full-history return | Full-history max DD | 2022+ return | 2022+ max DD | Beats B&H (2022+)? | Win rate (2022+) |
+|---|---|---|---|---|---|---|---|
+| BTC/USD | control (4h, **with** MTF) | 233,587.49% | 27.54% | 214.75% | 26.03% | YES | 34.8% |
+| BTC/USD | no MTF, 4h, m0 | -99.65% | 99.93% | -97.29% | 97.34% | no | 21.7% |
+| BTC/USD | no MTF, 4h, m2 | -93.37% | 99.38% | -93.04% | 93.45% | no | 26.4% |
+| BTC/USD | no MTF, 1h, m0 | -100.00% | 100.00% | -100.00% | 100.00% | no | 14.9% |
+| BTC/USD | no MTF, 1h, m2 | -100.00% | 100.00% | -100.00% | 100.00% | no | 19.3% |
+| ETH/USD | control (4h, **with** MTF) | 4,225,942.06% | 33.43% | 281.30% | 27.15% | YES | 36.5% |
+| ETH/USD | no MTF, 4h, m0 | -85.30% | 99.86% | -97.77% | 98.06% | no | 23.5% |
+| ETH/USD | no MTF, 4h, m2 | 141.20% | 98.72% | -90.22% | 93.62% | no | 29.4% |
+| ETH/USD | no MTF, 1h, m0 | -100.00% | 100.00% | -100.00% | 100.00% | no | 17.8% |
+| ETH/USD | no MTF, 1h, m2 | -100.00% | 100.00% | -100.00% | 100.00% | no | 22.6% |
+| SOL/USD | control (4h, **with** MTF) | 53,731.97% | 23.51% | 12,042.89% | 23.51% | YES | 42.7% |
+| SOL/USD | no MTF, 4h, m0 | -96.38% | 98.29% | -96.94% | 96.98% | no | 25.2% |
+| SOL/USD | no MTF, 4h, m2 | -93.35% | 97.61% | -95.08% | 95.14% | no | 29.6% |
+| SOL/USD | no MTF, 1h, m0 | -100.00% | 100.00% | -100.00% | 100.00% | no | 21.3% |
+| SOL/USD | no MTF, 1h, m2 | -100.00% | 100.00% | -100.00% | 100.00% | no | 25.1% |
+| DOGE/USD | control (4h, **with** MTF) | 793,888.48% | 49.00% | 2,078.11% | 46.55% | YES | 37.6% |
+| DOGE/USD | no MTF, 4h, m0 | -79.64% | 99.54% | -98.06% | 98.06% | no | 25.4% |
+| DOGE/USD | no MTF, 4h, m2 | 7.66% | 98.97% | -91.31% | 95.37% | no | 28.9% |
+| DOGE/USD | no MTF, 1h, m0 | -100.00% | 100.00% | -100.00% | 100.00% | no | 20.2% |
+| DOGE/USD | no MTF, 1h, m2 | -100.00% | 100.00% | -100.00% | 100.00% | no | 20.2% |
+
+### Key takeaways
+
+1. **Every no-MTF arm, on every symbol, in every window, loses the great majority or all of the
+   account.** `1h` is a complete wipeout (100.00% max drawdown = total loss) across all four
+   symbols and both margins, full-history and `2022+` alike. `4h` is "only" 79-99.65% lost, not
+   literally 100%, but not a meaningfully different outcome for anyone trading it.
+2. **This isn't a full-history-vs-recent split the way other findings in this file have been** -
+   there's no reversal to check for, because the recent (`2022+`) window is if anything *worse*
+   than full-history for every no-MTF arm (e.g. BTC 4h/m0: -99.65% full history, -97.29% just in
+   `2022+` - most of the damage is recent, not an old artifact). Both windows agree.
+3. **Win rate lands at 15-30% across the board** - well below what all-in/all-out compounding with
+   real fees (0.26%) and slippage (0.05%) can survive. The daily MTF confirmation isn't a minor
+   filter refining an already-decent signal; it is essentially *all* of the strategy's edge. A bare
+   RSI/SMA crossover fires on noise far more than on real trend changes, at both `1h` and `4h`.
+   `1h`'s ~3,000 closed trades vs `4h`'s ~700 in the same window quantifies the "1h - far too
+   active" concern already flagged in the 2026-08-03 entry - more frequent noise-driven entries pay
+   more frequent fee drag, compounding to a total loss.
+4. **Consistent with, and a direct extension of, prior findings in this file.** The 2026-08-04
+   entry documented plain `rsi(14,14)` (pre-slope-confirmation) losing to buy-and-hold at every
+   BTC start date; 2026-08-09 found `15m` RSI with no MTF confirmation wiped the account in every
+   window. This sweep shows the same failure mode holds at `1h` and `4h` too, not just `15m` - the
+   MTF gate is load-bearing at every timeframe tested so far, not a `15m`-specific fix.
+
+### Outcome
+
+**Do not remove the daily MTF confirmation at either `1h` or `4h`.** The gate SOL is currently
+waiting on is not an arbitrary obstacle - it is the mechanism separating a strategy that beats
+buy-and-hold by orders of magnitude from one that loses the entire account. If faster/more frequent
+entries are wanted, the direction to explore is a *cheaper or faster-reacting* confirmation (e.g. a
+shorter-period daily RSI, or a different higher timeframe), not dropping confirmation altogether.

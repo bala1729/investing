@@ -1,0 +1,12 @@
+[
+ {"arm": "control_4h_mtf_m0", "strategy": "rsi_m0", "timeframe": "4h",
+  "windows": ["2018+", "2020+", "2022+", "full"]},
+ {"arm": "no_mtf_4h_m0", "strategy": "rsi_m0", "timeframe": "4h",
+  "windows": ["2018+", "2020+", "2022+", "full"], "no_mtf": true},
+ {"arm": "no_mtf_4h_m2", "strategy": "rsi_m2", "timeframe": "4h",
+  "windows": ["2018+", "2020+", "2022+", "full"], "no_mtf": true},
+ {"arm": "no_mtf_1h_m0", "strategy": "rsi_m0", "timeframe": "1h",
+  "windows": ["2018+", "2020+", "2022+", "full"], "no_mtf": true},
+ {"arm": "no_mtf_1h_m2", "strategy": "rsi_m2", "timeframe": "1h",
+  "windows": ["2018+", "2020+", "2022+", "full"], "no_mtf": true}
+]
