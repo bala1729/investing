@@ -1880,3 +1880,83 @@ waiting on is not an arbitrary obstacle - it is the mechanism separating a strat
 buy-and-hold by orders of magnitude from one that loses the entire account. If faster/more frequent
 entries are wanted, the direction to explore is a *cheaper or faster-reacting* confirmation (e.g. a
 shorter-period daily RSI, or a different higher timeframe), not dropping confirmation altogether.
+
+---
+
+## 2026-09-07 — Bootstrapping a year-end portfolio outcome distribution from real trade history
+
+**Why this run exists.** Asked for the current balance and how much it's likely to change by
+2026-12-31. A specific dollar prediction from a backtest would be false precision - this project's
+own per-year checks already show the same validated config losing to buy-and-hold in some
+individual years despite dominating over full history. Built a proper historical bootstrap instead
+of guessing a number: `tools/portfolio_projection.py` reuses `Backtester` per symbol purely for its
+no-lookahead signal-and-fill mechanics (100%-sizing dollar amounts discarded, only trade
+timestamps/prices kept), merges all five live symbols' independent trade streams chronologically,
+and replays them against **one shared cash balance** sized at each symbol's real live cap (15% for
+BTC/ETH/SOL/ADA, 5% for DOGE) of whatever cash is free at that moment - the first time this
+project has modeled the shared-balance, real-position-size portfolio dynamic end-to-end rather than
+each symbol's 100%-sizing curve in isolation.
+
+**Method:** one realistic multi-symbol equity curve (2013-11-05 through the archive's end,
+2025-12-31, 5,633 trade events across all five symbols), then every historical window of the
+target length (114 days - today through 2026-12-31) is sampled as a starting-equity/ending-equity
+ratio, applied to the account's real current balance ($3,135.33) for a percentile spread rather
+than a point estimate.
+
+### Result (full 2013+ history, 5,426 overlapping 114-day windows)
+
+| Percentile | Multiple | Balance | Return |
+|---|---|---|---|
+| p5 | 1.019x | $3,193.69 | +1.9% |
+| p10 | 1.040x | $3,262.28 | +4.0% |
+| p25 | 1.089x | $3,414.18 | +8.9% |
+| p50 | 1.150x | $3,605.43 | +15.0% |
+| p75 | 1.258x | $3,943.95 | +25.8% |
+| p90 | 1.365x | $4,280.28 | +36.5% |
+| p95 | 1.449x | $4,542.75 | +44.9% |
+
+Only 2.0% of historical 114-day windows lost money. The constructed portfolio curve's own max
+drawdown across the full 12 years (including 2018 and 2022) is 8.62% - lower than several
+individual symbols' own max drawdown at the same position size (the sizing sweep found BTC/ETH/SOL
+each around 6-9% max DD alone at these caps), a genuine diversification effect from five
+correlated-but-not-perfectly-synchronized entry/exit timings, on top of the confirmation gate's own
+effect of sitting in cash rather than holding through the worst of a crash.
+
+### Start-date sensitivity - checked per this file's own rule, and it holds up
+
+| Start | Windows | p5 | p50 | p95 | Lost money |
+|---|---|---|---|---|---|
+| 2013+ | 5,426 | 1.019x | 1.150x | 1.449x | 2.0% |
+| 2020+ | 3,782 | 1.030x | 1.169x | 1.531x | 1.6% |
+| 2022+ | 2,568 | 1.014x | 1.137x | 1.311x | 2.4% |
+| 2023+ | 1,897 | 1.008x | 1.154x | 1.321x | 3.3% |
+
+Restricting to just 2022+ or 2023+ - crypto's harshest recent bear market and its volatile
+aftermath, the exact skeptical check that has reversed other headline numbers in this file - barely
+moves the picture. This result is not solely an artifact of 2013-2019's extraordinary early-crypto
+growth.
+
+### Caveats - read before trusting this over the live track record
+
+1. **A held position is marked at its own entry price between entry and exit, not continuously to
+   market.** Realized P&L (what actually drives compounding) is exact; intra-trade unrealized
+   swings are not reflected, understating volatility somewhat.
+2. **5,426 windows are not 5,426 independent draws.** Adjacent day-shifted windows overlap almost
+   entirely; a single multi-year trend shows up in thousands of them. This describes the *spread of
+   historical outcomes actually observed*, not a formal statistical confidence interval.
+3. **Assumes the next 114 days resemble some day in 2013-2025.** It cannot know about a genuinely
+   new market regime with no precedent in that window - and the start-date check above only tests
+   *within* that same historical archive, not against something outside it.
+4. **This is dramatically more optimistic than the live account's actual result so far**
+   (net **-$10.17** across 20 closed trades since 2026-08-12 - see the trade journal). That is not
+   a contradiction: 26 days is a short, small sample dominated by one outsized loss (-$21.81 on
+   SOL, the first trade at the new 15% cap), and even a genuinely good-odds distribution produces
+   losing short stretches sometimes. It is a reason to treat both numbers as what they are - a
+   small live sample and a historical bootstrap - rather than average them into false confidence.
+
+### Outcome
+
+No single number should be quoted as "the" year-end projection. The honest range: historically,
+90% of comparable 114-day windows for this exact five-symbol, real-position-size setup landed
+between roughly +2% and +45%, with a 2-3% chance of ending the period down. That range, not a point
+estimate, is what a backtest can actually support here.
