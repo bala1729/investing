@@ -26,14 +26,19 @@ class RSIConfirmationExitStrategy(Strategy):
     *nearest confirmation timeframe* (per `MTF_CONFIRMATION_MAP`) is no longer
     above its own SMA.
 
-    `entry_timeframe` is required, not inferred from `higher_tf_candles` at
-    call time - relying on dict key order would be an implicit, easy-to-break
-    contract; naming it explicitly in the constructor makes which timeframe
-    drives the exit an obvious part of how the strategy is configured; it also
-    has to be a key `MTF_CONFIRMATION_MAP` maps to at least one higher
-    timeframe, since without one there's nothing for this variant to exit on
-    at all - checked eagerly, in the constructor, not the first time a signal
-    is generated.
+    `entry_timeframe` is named explicitly, not inferred from `higher_tf_candles`
+    at call time - relying on dict key order would be an implicit, easy-to-break
+    contract; naming it explicitly makes which timeframe drives the exit an
+    obvious part of how the strategy is configured. Defaults to `"4h"` (this
+    account's current live entry timeframe) only so every strategy in the
+    registry stays constructible with no arguments, matching every other entry
+    there - a caller running a different entry timeframe must still pass it
+    explicitly, the same way `scripts/run_bot.py`/`scripts/backtest.py` always
+    thread their own `--timeframe` straight through rather than relying on the
+    default. Whatever value is used has to be a key `MTF_CONFIRMATION_MAP` maps
+    to at least one higher timeframe, since without one there's nothing for
+    this variant to exit on at all - checked eagerly, in the constructor, not
+    the first time a signal is generated.
 
     Requires `higher_tf_candles[<exit timeframe>]` to actually exit a position:
     with that data missing, a position that has entered can never leave (the
@@ -52,7 +57,7 @@ class RSIConfirmationExitStrategy(Strategy):
 
     def __init__(
         self,
-        entry_timeframe: str,
+        entry_timeframe: str = "4h",
         rsi_period: int = 14,
         ma_period: int = 14,
     ) -> None:

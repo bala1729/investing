@@ -2070,3 +2070,63 @@ their earliest, most severe crashes before the daily confirmation catches up). W
 re-run at real position sizing and, if that holds up, a live order-path smoke test per the go-live
 checklist - not a same-day switch given the size of this result and this project's own "measure
 before adopting" discipline.
+
+---
+
+## 2026-09-10 (continued) — Re-validated at real position sizing before switching the live bots, plus DOGE (never covered above)
+
+**Why this run exists.** Asked to switch all five live bots to `rsi_confirmation_exit`, same
+position sizing as today. Flagged first: the prior entry's numbers were 100%-of-balance
+compounding, not the account's real 15%/5% caps, and DOGE was never in the original four-symbol
+comparison at all. User asked for both gaps closed before anything live changed.
+
+### BTC/ADA/ETH/SOL at the real 15% cap, `2022+` window
+
+| Symbol | Arm | Return | Max DD | Win rate |
+|---|---|---|---|---|
+| BTC/USD | control (4h exit) | 27.34% | 4.17% | 38.1% |
+| BTC/USD | daily confirmation exit | 104.63% | 2.29% | 68.1% |
+| ADA/USD | control (4h exit) | 80.05% | 6.60% | 44.1% |
+| ADA/USD | daily confirmation exit | 245.71% | 7.06% | 71.4% |
+| ETH/USD | control (4h exit) | 36.27% | 4.53% | 43.0% |
+| ETH/USD | daily confirmation exit | 156.34% | 3.41% | 73.2% |
+| SOL/USD | control (4h exit) | 148.47% | 4.94% | 49.6% |
+| SOL/USD | daily confirmation exit | 441.48% | 4.67% | 81.4% |
+
+The relative improvement holds up at real sizing, not just the unrealistic 100% baseline: 3-4x
+return in this window for every symbol, win rate up 25-35 points, drawdown flat-to-better in three
+of four symbols (ADA ticks up slightly, 6.60% -> 7.06%, still small in absolute terms). The
+full-history BTC/ETH drawdown increase noted in the prior entry also shows up at real sizing -
+ETH full-history max DD goes from 8.60% to 14.52% at 15% - confirming that trade-off is a real
+property of the strategy, not a 100%-compounding artifact.
+
+### DOGE/USD - never covered in the original four-symbol sweep, checked separately
+
+DOGE stays at its existing conservative 5% cap (never bumped to 15% like the other four, per the
+2026-08-27 position-size sweep's tail-risk finding) - validated at that same 5%, not 15%.
+
+| Window | Arm | Return | Max DD | Win rate |
+|---|---|---|---|---|
+| 2022+ | control (4h exit), 5% | 25.09% | 2.95% | 43.4% |
+| 2022+ | daily confirmation exit, 5% | 64.86% | 2.08% | 73.7% |
+| full | control (4h exit), 5% | 103.83% | 14.90% | 46.7% |
+| full | daily confirmation exit, 5% | 312.44% | 24.54% | 73.9% |
+
+**Per-year, all 5 years win** - including 2023, the one year the *control* arm actually lost money
+(-17.22%) while the new variant turned it into +322.57%, both far better than 2023's own
+buy-and-hold return (+27.75%). Same pattern as BTC/ETH: `2022+` drawdown is better with the new
+strategy (2.95% -> 2.08%), full-history drawdown is worse (14.90% -> 24.54%) - and more pronounced
+for DOGE than for BTC/ETH, consistent with DOGE already having the worst full-history tail risk of
+the five symbols in the 2026-08-27 sizing sweep. Recent-window numbers are what a live account
+actually experiences going forward; the full-history figure is the honest worst case, not
+disqualifying but worth knowing.
+
+### Outcome
+
+Both gaps closed. All five bots switched to `rsi_confirmation_exit` live (same position sizing as
+before - 15% BTC/ETH/SOL/ADA, 5% DOGE): registered in `src/bot/strategies/registry.py` and both
+CLIs (`entry_timeframe` now threads through from `--timeframe` automatically), verified with a
+manual `--once` run per symbol against each bot's real existing database before touching cron
+(reused the existing per-symbol databases rather than starting fresh ones - all five were flat at
+switch time, so no orphaned-position risk, and this preserves each symbol's trade history rather
+than fragmenting it). See `kraken-bot-state/RESTART.md` for the exact live launch record.

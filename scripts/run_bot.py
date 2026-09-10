@@ -43,8 +43,10 @@ def parse_args() -> argparse.Namespace:
         default="sma",
         choices=sorted(STRATEGIES),
         help="Which strategy to run: sma, ema, macd (MACD signal-line crossover), "
-        "rsi (RSI crossing its own SMA), or confluence (EMA crossover on Heikin Ashi "
-        "candles, confirmed by MACD/RSI/Bollinger Bands).",
+        "rsi (RSI crossing its own SMA), rsi_confirmation_exit (same RSI entry, but "
+        "exits on the entry timeframe's confirmation timeframe instead of its own - "
+        "e.g. a 4h bot exits on the daily RSI/SMA, not the 4h one), or confluence "
+        "(EMA crossover on Heikin Ashi candles, confirmed by MACD/RSI/Bollinger Bands).",
     )
     parser.add_argument(
         "--fast",
@@ -140,6 +142,7 @@ async def main() -> None:
             rsi_period=args.rsi_period,
             ma_period=args.ma_period,
             exit_margin=args.exit_margin,
+            entry_timeframe=args.timeframe,
         )
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
