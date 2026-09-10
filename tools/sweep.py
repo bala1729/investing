@@ -74,6 +74,9 @@ from src.bot.strategies.examples.macd_crossover import MACDCrossoverStrategy  # 
 from src.bot.strategies.examples.moving_average_crossover import (  # noqa: E402
     MovingAverageCrossoverStrategy,
 )
+from src.bot.strategies.examples.rsi_confirmation_exit import (  # noqa: E402
+    RSIConfirmationExitStrategy,
+)
 from src.bot.strategies.examples.rsi_crossover import RSICrossoverStrategy  # noqa: E402
 from src.config import get_settings  # noqa: E402
 
@@ -100,6 +103,12 @@ STRATEGIES = {
     "rsi_m3": lambda: RSICrossoverStrategy(14, 14, exit_margin=3.0),
     "rsi_m5": lambda: RSICrossoverStrategy(14, 14, exit_margin=5.0),
     "confluence": lambda: HeikinAshiConfluenceStrategy(),
+    # Exits on the entry timeframe's nearest MTF_CONFIRMATION_MAP timeframe
+    # instead of its own RSI - entry_timeframe is baked in per label since
+    # STRATEGIES lambdas take no args; add another label here for a different
+    # entry timeframe rather than trying to derive it from the config's own
+    # "timeframe" field (this dict has no access to that at lambda-build time).
+    "rsi_confirmation_exit_4h": lambda: RSIConfirmationExitStrategy(entry_timeframe="4h"),
 }
 
 WINDOWS: dict[str, tuple[str | None, str | None]] = {

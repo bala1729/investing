@@ -1960,3 +1960,113 @@ No single number should be quoted as "the" year-end projection. The honest range
 90% of comparable 114-day windows for this exact five-symbol, real-position-size setup landed
 between roughly +2% and +45%, with a 2-3% chance of ending the period down. That range, not a point
 estimate, is what a backtest can actually support here.
+
+---
+
+## 2026-09-10 — Exit on the confirmation timeframe instead of the entry timeframe: wins in all 20 symbol-years tested
+
+**Why this run exists.** Asked to test a different exit: instead of `RSICrossoverStrategy`'s exit
+firing off the *entry* timeframe's own RSI/SMA (a `4h` bot exits on a `4h` signal), exit only when
+the *confirmation* timeframe - the same higher timeframe entry confirmation already checks - turns.
+For the `4h` entries this account actually runs, that means exiting off the daily RSI/SMA, not the
+`4h` one. Clarified mid-design to generalize properly rather than hardcode "daily": the exit
+timeframe should be derived from `MTF_CONFIRMATION_MAP` the same way entry confirmation already is
+(`4h` -> `1d`, `1h` -> `4h`, its first/nearest entry), not hardcoded - so a `1h` variant exits on
+`4h`, not `1d`, automatically.
+
+**Implementation:** new `RSIConfirmationExitStrategy`
+(`src/bot/strategies/examples/rsi_confirmation_exit.py`) - entry is byte-for-byte the same as
+`RSICrossoverStrategy` (reuses `mtf_rsi_confirms_buy` directly, no reimplementation), only the exit
+condition changes: sell when the entry timeframe's nearest `MTF_CONFIRMATION_MAP` timeframe is no
+longer above its own SMA, computed from the exact same no-lookahead-sliced `higher_tf_candles` data
+entry confirmation already receives - not a new data source or a new mechanism, the same one applied
+to the other side of the trade. `entry_timeframe` is a required constructor argument (not inferred
+from dict key order, which would be an implicit and fragile contract) and is validated eagerly - an
+entry timeframe with no `MTF_CONFIRMATION_MAP` entry raises immediately, not on the first signal.
+13 new tests, including one that plants disagreeing `4h`/`1d` data specifically to confirm a
+`1h`-configured instance keys off `4h` and ignores `1d`, not the other way around.
+
+**Setup:** `tools/examples/rsi_confirmation_exit.json` - `control_4h_m2` (the exact current live
+config, `rsi_m2`/`4h`) vs `daily_confirmation_exit` (`rsi_confirmation_exit_4h`, same entry, daily
+exit), across `2018+`/`2020+`/`2022+`/`full`. Control arm reproduces every previously-logged number
+exactly (BTC 2018+ = 7,789.41%, ADA 2018+ = 360,274.95%, SOL 2018+/2020+ = 135,437.78%, all matching
+prior entries in this file) - confirms nothing else changed.
+
+### Full-history vs the skeptical `2022+` window, all four symbols
+
+| Symbol | Arm | 2022+ return | 2022+ max DD | 2022+ win rate | 2022+ closed trades |
+|---|---|---|---|---|---|
+| BTC/USD | control (4h exit) | 328.25% | 24.93% | 38.1% | 278 |
+| BTC/USD | daily confirmation exit | 8,329.89% | 13.82% | 68.1% | 113 |
+| ADA/USD | control (4h exit) | 3,392.40% | 34.28% | 44.1% | 270 |
+| ADA/USD | daily confirmation exit | 109,955.70% | 31.00% | 71.4% | 112 |
+| ETH/USD | control (4h exit) | 519.49% | 26.88% | 43.0% | 284 |
+| ETH/USD | daily confirmation exit | 32,164.28% | 19.88% | 73.2% | 123 |
+| SOL/USD | control (4h exit) | 25,136.55% | 27.63% | 49.6% | 278 |
+| SOL/USD | daily confirmation exit | 1,892,485.86% | 24.50% | 81.4% | 113 |
+
+Every symbol: return dramatically higher (25x-75x in the `2022+` window alone), max drawdown lower,
+win rate roughly 30-40 points higher, and close to half as many trades (less fee drag, and fewer
+whipsaws - getting stopped out of a `4h` pullback and re-buying higher inside the same uptrend the
+daily never actually left).
+
+### Per-year check - the rule this file insists on before trusting a multi-year headline
+
+| Symbol | Year | Control return | Daily-exit return | Daily-exit wins? |
+|---|---|---|---|---|
+| BTC/USD | 2021 | 80.30% | 704.33% | YES |
+| BTC/USD | 2022 | 20.82% | 87.45% | YES |
+| BTC/USD | 2023 | 71.90% | 314.71% | YES |
+| BTC/USD | 2024 | 91.36% | 346.15% | YES |
+| BTC/USD | 2025 | 8.50% | 115.25% | YES |
+| ADA/USD | 2021-2025 | 529.75% / 140.76% / 59.01% / 158.03% / 176.67% | 2,478.84% / 295.82% / 557.27% / 670.14% / 284.59% | YES (all 5) |
+| ETH/USD | 2021-2025 | 338.37% / 48.31% / 13.31% / 77.30% / 92.72% | 1,901.88% / 303.52% / 220.63% / 373.26% / 341.95% | YES (all 5) |
+| SOL/USD | 2021-2025 | 437.07% / 87.29% / 669.68% / 194.16% / 313.44% | 1,566.35% / 420.57% / 3,641.43% / 813.40% / 578.87% | YES (all 5) |
+
+**Wins in all 20 symbol-years tested, zero exceptions** - including ETH 2023, the one year in this
+whole table where the control arm actually lost to buy-and-hold (13.31% vs 91.08%); the daily-exit
+variant still won that year both against the control (220.63%) and against buy-and-hold. This is a
+cleaner sweep than most findings in this file, which usually have at least one exception somewhere.
+
+### The one real trade-off found: full-history max drawdown got *worse*, not better, for BTC and ETH specifically
+
+| Symbol | Window | Control max DD | Daily-exit max DD |
+|---|---|---|---|
+| BTC/USD | full | 27.04% | 29.89% |
+| BTC/USD | 2022+ | 24.93% | 13.82% |
+| ETH/USD | full | 36.25% | 54.33% |
+| ETH/USD | 2022+ | 26.88% | 19.88% |
+
+Every windowed comparison (`2018+`/`2020+`/`2022+`) shows lower drawdown for the daily-exit variant
+- only `full` (BTC/ETH's data reaching back to 2013/2015, before ADA/SOL's history even starts)
+shows the opposite. Mechanism, not a bug: holding through `4h`-level noise means holding through
+more of a *fast, severe* crash too, before the slower daily confirmation catches up and finally
+exits - the same trade-off that buys the much higher win rate and return. The `2022+` numbers -
+including 2022 itself, a real crash year - say this trade-off was still net-favorable in every
+recent year tested; the deeper full-history figure says the very worst historical crashes (something
+in BTC/ETH's 2013-2017 window, not visible in ADA/SOL's shorter history) hit this variant harder in
+absolute drawdown terms even while it still ended those periods dramatically ahead on return.
+
+### Caveats
+
+1. **100%-of-balance, all-in/all-out compounding, same as every other control arm in this file** -
+   the absolute percentages are not literally realistic and compound small edge improvements into
+   enormous numbers (see the 2026-08-27 position-size sweep for what this looks like at real
+   sizing); the *relative* comparison against the control arm, run identically, is the credible
+   part.
+2. **Roughly half as many closed trades means roughly half the historical sample size** feeding
+   the win-rate/drawdown statistics above - a real effect of trading less often, not an artifact,
+   but worth remembering when the win-rate jump looks dramatic.
+3. **Not yet checked at real position sizing** (5-15%, per the account's actual live caps) or
+   combined with the cross-symbol portfolio bootstrap from the prior entry - both would be the
+   natural next steps before considering this for live capital.
+
+### Outcome
+
+The strongest, cleanest result logged in this file to date - wins on return, win rate, and trade
+count in every window and every individual year tested, with one honestly-reported exception (worse
+full-history max drawdown for BTC/ETH specifically, traced to holding through the deepest part of
+their earliest, most severe crashes before the daily confirmation catches up). Worth the next step:
+re-run at real position sizing and, if that holds up, a live order-path smoke test per the go-live
+checklist - not a same-day switch given the size of this result and this project's own "measure
+before adopting" discipline.

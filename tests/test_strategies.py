@@ -24,6 +24,7 @@ from src.bot.strategies.examples.macd_crossover import MACDCrossoverStrategy
 from src.bot.strategies.examples.moving_average_crossover import (
     MovingAverageCrossoverStrategy,
 )
+from src.bot.strategies.examples.rsi_confirmation_exit import RSIConfirmationExitStrategy
 from src.bot.strategies.examples.rsi_crossover import (
     RSICrossoverStrategy,
     mtf_rsi_confirms_buy,
@@ -1218,3 +1219,133 @@ class TestRsiAndSignalLine:
 
         pd.testing.assert_series_equal(rsi, ta.rsi(closes, length=14))
         pd.testing.assert_series_equal(sma, ta.sma(ta.rsi(closes, length=14), length=14))
+
+
+class TestRSIConfirmationExitStrategy:
+    """Tests for the RSICrossoverStrategy variant that exits off the entry
+    timeframe's nearest MTF_CONFIRMATION_MAP timeframe instead of its own
+    RSI/SMA - entry logic is identical to RSICrossoverStrategy (reuses
+    mtf_rsi_confirms_buy directly), so only the exit-side behavior and the
+    timeframe-selection logic get dedicated coverage here."""
+
+    def test_rejects_non_positive_periods(self) -> None:
+        with pytest.raises(ValueError, match="rsi_period must be positive"):
+            RSIConfirmationExitStrategy(entry_timeframe="4h", rsi_period=0)
+        with pytest.raises(ValueError, match="ma_period must be positive"):
+            RSIConfirmationExitStrategy(entry_timeframe="4h", ma_period=0)
+
+    def test_rejects_an_entry_timeframe_with_no_higher_timeframe_mapped(self) -> None:
+        with pytest.raises(ValueError, match="no higher timeframe"):
+            RSIConfirmationExitStrategy(entry_timeframe="not-a-real-timeframe")
+
+    def test_name_encodes_entry_timeframe_and_both_periods(self) -> None:
+        assert (
+            RSIConfirmationExitStrategy(entry_timeframe="4h").name
+            == "rsi_confirmation_exit_4h_14_14"
+        )
+        assert (
+            RSIConfirmationExitStrategy(entry_timeframe="4h", rsi_period=7, ma_period=3).name
+            == "rsi_confirmation_exit_4h_7_3"
+        )
+
+    def test_exit_timeframe_is_the_nearest_mapped_higher_timeframe(self) -> None:
+        """4h -> 1d (MTF_CONFIRMATION_MAP["4h"] == ("1d",)); 1h -> 4h (the
+        first entry of MTF_CONFIRMATION_MAP["1h"] == ("4h", "1d")), not 1d -
+        this is the exact generalization the class exists for."""
+        assert RSIConfirmationExitStrategy(entry_timeframe="4h")._exit_timeframe == "1d"
+        assert RSIConfirmationExitStrategy(entry_timeframe="1h")._exit_timeframe == "4h"
+
+    def test_returns_none_below_minimum_candles(self) -> None:
+        strategy = RSIConfirmationExitStrategy(entry_timeframe="4h", rsi_period=5, ma_period=3)
+        short = make_candles([100.0 + i for i in range(8)])
+        assert strategy.generate_signal("BTC/USD", short) is None
+
+    def test_buys_while_rsi_sits_above_its_moving_average(self) -> None:
+        """Entry is unchanged from RSICrossoverStrategy - state-based on the
+        entry timeframe, no confirmation-timeframe data needed to enter."""
+        strategy = RSIConfirmationExitStrategy(entry_timeframe="4h", rsi_period=5, ma_period=3)
+        signal = strategy.generate_signal("BTC/USD", make_candles(rising_closes()))
+        assert signal is not None
+        assert signal.side == OrderSide.BUY
+
+    def test_no_entry_signal_while_entry_timeframe_is_bearish(self) -> None:
+        strategy = RSIConfirmationExitStrategy(entry_timeframe="4h", rsi_period=5, ma_period=3)
+        assert strategy.generate_signal("BTC/USD", make_candles(falling_closes())) is None
+
+    def test_higher_timeframe_agreement_allows_the_buy(self) -> None:
+        rising = make_candles(rising_closes())
+        strategy = RSIConfirmationExitStrategy(entry_timeframe="4h", rsi_period=5, ma_period=3)
+        assert (
+            strategy.generate_signal("BTC/USD", rising, {"1d": rising}).side  # type: ignore[union-attr]
+            == OrderSide.BUY
+        )
+
+    def test_exits_on_a_bearish_confirmation_timeframe_even_while_entry_tf_is_still_bullish(
+        self,
+    ) -> None:
+        """The whole point of this variant: a 4h pullback that would trigger
+        RSICrossoverStrategy's own exit must NOT trigger this one, but a
+        daily-level turn must - even while the entry timeframe still looks
+        bullish, which is exactly the case RSICrossoverStrategy's exit could
+        never see (it only ever looks at its own timeframe)."""
+        entry_tf_bullish = make_candles(rising_closes())
+        daily_bearish = make_candles(falling_closes())
+        strategy = RSIConfirmationExitStrategy(entry_timeframe="4h", rsi_period=5, ma_period=3)
+
+        signal = strategy.generate_signal("BTC/USD", entry_tf_bullish, {"1d": daily_bearish})
+
+        assert signal is not None
+        assert signal.side == OrderSide.SELL
+        assert "1d RSI" in signal.reason
+
+    def test_exit_uses_4h_not_1d_when_entry_timeframe_is_1h(self) -> None:
+        """The generalization in practice: a 1h-entry instance must key off
+        the "4h" entry of higher_tf_candles for its exit, not "1d" - even when
+        both are supplied and disagree, so a 1d-only signal can't leak in."""
+        entry_tf_bullish = make_candles(rising_closes())
+        four_h_bearish = make_candles(falling_closes())
+        one_d_bullish = make_candles(rising_closes())
+        strategy = RSIConfirmationExitStrategy(entry_timeframe="1h", rsi_period=5, ma_period=3)
+
+        signal = strategy.generate_signal(
+            "BTC/USD", entry_tf_bullish, {"4h": four_h_bearish, "1d": one_d_bullish}
+        )
+
+        assert signal is not None
+        assert signal.side == OrderSide.SELL
+        assert "4h RSI" in signal.reason
+
+    def test_holds_through_entry_timeframe_weakness_while_confirmation_tf_stays_bullish(
+        self,
+    ) -> None:
+        """The other half of the point: entry-timeframe RSI dipping below its
+        own SMA must NOT exit this variant while the confirmation timeframe is
+        still bullish - RSICrossoverStrategy would exit here; this one
+        holds."""
+        entry_tf_bearish = make_candles(falling_closes())
+        daily_bullish = make_candles(rising_closes())
+        strategy = RSIConfirmationExitStrategy(entry_timeframe="4h", rsi_period=5, ma_period=3)
+
+        # No open-position tracking inside the strategy itself (matches every
+        # other strategy here - the engine/backtester tracks position state
+        # and ignores a signal that doesn't apply), so what matters is that no
+        # SELL is emitted while daily is bullish, regardless of entry-tf state.
+        signal = strategy.generate_signal("BTC/USD", entry_tf_bearish, {"1d": daily_bullish})
+        assert signal is None or signal.side != OrderSide.SELL
+
+    def test_no_exit_signal_without_confirmation_timeframe_data(self) -> None:
+        """Undecidable, not false: with no confirmation-timeframe data
+        supplied at all, the exit condition cannot be evaluated, so nothing is
+        emitted - never mistaking "unknown" for "safe to hold" or "time to
+        sell"."""
+        strategy = RSIConfirmationExitStrategy(entry_timeframe="4h", rsi_period=5, ma_period=3)
+        signal = strategy.generate_signal("BTC/USD", make_candles(falling_closes()))
+        assert signal is None
+
+    def test_no_exit_signal_when_confirmation_timeframe_history_is_too_short(self) -> None:
+        strategy = RSIConfirmationExitStrategy(entry_timeframe="4h", rsi_period=5, ma_period=3)
+        too_short_daily = make_candles([100.0 + i for i in range(8)])
+        signal = strategy.generate_signal(
+            "BTC/USD", make_candles(falling_closes()), {"1d": too_short_daily}
+        )
+        assert signal is None
