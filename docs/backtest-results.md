@@ -2130,3 +2130,54 @@ manual `--once` run per symbol against each bot's real existing database before 
 (reused the existing per-symbol databases rather than starting fresh ones - all five were flat at
 switch time, so no orphaned-position risk, and this preserves each symbol's trade history rather
 than fragmenting it). See `kraken-bot-state/RESTART.md` for the exact live launch record.
+
+---
+
+## 2026-10-07 — Reacting to the still-forming daily candle instead of waiting for it to close: loses in all 35 symbol-windows tested
+
+**Why this run exists.** After manually overriding a live ADA exit to act on the live (not-yet-closed)
+daily candle - the daily RSI/SMA had crossed bearish intraday but hadn't closed that way yet - user
+asked to make that the live bots' standing behavior for both the entry confirmation and the exit
+(both read the same daily `higher_tf_candles`), and to backtest it first.
+
+**Implementation:** `TradingEngine.run_strategy_once`/`run_forever` gained `use_live_candle: bool =
+False` (`scripts/run_bot.py`: `--use-live-candle`, off by default) - when set, the confirmation/
+higher-timeframe series keeps its own still-forming candle instead of dropping it, same as the
+entry timeframe's candle already does unconditionally. Backtesting this needed a new primitive
+(`partial_running_candles` in `src/backtest/data.py`): for every 1-minute base candle, the
+OHLCV of its own higher-timeframe period *as of that instant*, not the period's eventual final
+values - `resample_candles()` answers "what did this period close at," this answers "what would a
+live poll have seen right now." `Backtester.run()` takes an optional `live_candle_base` dict
+(keyed the same as `higher_tf_candles`) and, per bar, splices that partial reading in for the
+in-progress period only - every already-elapsed period is untouched. `tools/sweep.py` configs opt
+in with `"use_live_candle": true`.
+
+### `2022+` and full-history, all five symbols, real 20% sizing
+
+| Symbol | Arm | `2022+` return | full-history return |
+|---|---|---|---|
+| BTC/USD | control (closed candle) | 158.64% | 11,740.82% |
+| BTC/USD | live candle | -5.07% | 162.41% |
+| ETH/USD | control (closed candle) | 248.48% | 34,041.83% |
+| ETH/USD | live candle | -17.56% | 309.67% |
+| SOL/USD | control (closed candle) | 830.73% | 1,875.40% |
+| SOL/USD | live candle | 23.00% | 72.78% |
+| ADA/USD | control (closed candle) | 411.85% | 4,600.14% |
+| ADA/USD | live candle | -17.69% | 32.71% |
+| DOGE/USD | control (closed candle) | 583.42% | 11,853.09% |
+| DOGE/USD | live candle | 13.95% | 278.30% |
+
+**Loses in all 35 symbol-windows tested (5 symbols x 7 windows each: `2022+`, `full`, 2021-2025),
+zero exceptions** - the cleanest-losing sweep logged in this file, mirror image of the 2026-09-10
+daily-confirmation-exit result that won everywhere. Closed trades roughly double in every single
+case (e.g. BTC `2022+`: 113 -> 197; ADA: 112 -> 221) - the mechanism is exactly what it looks like:
+acting on a same-day RSI/SMA cross that hasn't closed yet means getting whipsawed by intraday
+reversals the closed-candle version never has to see, paying the entry+exit fee on each one.
+
+### Outcome
+
+Not deployed. `use_live_candle` stays in the code as an off-by-default opt-in (harmless - every
+other strategy/bot is completely unaffected), but the crontab was never touched - all five live
+bots are still on the closed-candle default they were already running. The one live trade made on
+this basis (ADA, 2026-10-06, manual override, -4.58%) was treated as a one-off judgment call at the
+time, not a preview of a policy that was about to ship - this result says it should stay a one-off.

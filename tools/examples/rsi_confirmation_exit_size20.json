@@ -1,0 +1,6 @@
+[
+ {"arm": "control_4h_m2_size20", "strategy": "rsi_m2", "timeframe": "4h",
+  "windows": ["2022+", "full", "2021", "2022", "2023", "2024", "2025"], "position_size_pct": 20},
+ {"arm": "daily_exit_size20", "strategy": "rsi_confirmation_exit_4h", "timeframe": "4h",
+  "windows": ["2022+", "full", "2021", "2022", "2023", "2024", "2025"], "position_size_pct": 20}
+]
