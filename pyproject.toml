@@ -82,4 +82,13 @@ exclude_lines = [
 ]
 
 [tool.uv]
-override-dependencies = ["aiohttp>=3.14.3", "cryptography>=50.0.0"]
+# ccxt 4.5.85 (latest as of 2026-10) hard-pins exact vulnerable versions of
+# both multidict (CVE-2026-104874, fixed in 6.9.1) and urllib3 (PYSEC-2026-4175/
+# 4176/4177, fixed in 2.8.0) - override past both the same way aiohttp/
+# cryptography already are below, until ccxt catches up.
+override-dependencies = [
+    "aiohttp>=3.14.3",
+    "cryptography>=50.0.0",
+    "multidict>=6.9.1,<7.0",
+    "urllib3>=2.8.0",
+]
