@@ -80,6 +80,20 @@ def sell_signal(symbol: str = "BTC/USD") -> Signal:
     return Signal(symbol=symbol, side=OrderSide.SELL, strategy="test", reason="test")
 
 
+def read_bot_snapshot(settings: Settings, symbol: str) -> Decimal | None:
+    """The shared equity tracker's last-known position value for `symbol`,
+    or None if it has never written one."""
+    path = Path(settings.portfolio_equity_db_path).expanduser()
+    conn = sqlite3.connect(str(path))
+    try:
+        row = conn.execute(
+            "SELECT position_value FROM bot_snapshots WHERE symbol = ?", (symbol,)
+        ).fetchone()
+    finally:
+        conn.close()
+    return None if row is None else Decimal(row[0])
+
+
 class TestProcessSignalBuy:
     async def test_approved_buy_executes_and_persists(self, db_settings: Settings) -> None:
         client = make_client(last_price=Decimal("100"))
@@ -501,6 +515,74 @@ class RecordingStrategy(Strategy):
         return self._signal
 
 
+class TestPortfolioEquitySync:
+    """A bot's own trade updates the real shared USD balance on the exchange
+    instantly; its contribution to the shared equity pool must follow within
+    the same cycle, not wait for its next one - see
+    TradingEngine._sync_portfolio_equity's docstring for the false drawdown-
+    breach this gap caused live (kraken-bot-state/RESTART.md, 2026-10-07)."""
+
+    async def test_buy_writes_the_new_position_value_immediately(
+        self, db_settings: Settings
+    ) -> None:
+        client = make_client(last_price=Decimal("100"))
+        executor = make_executor(balance=Decimal("10000"))
+        executor.execute_market_order.return_value = make_order(
+            side=OrderSide.BUY, filled_amount=Decimal("2"), average_fill_price=Decimal("100")
+        )
+        engine = make_engine(client, executor, db_settings)
+
+        result = await engine.process_signal(buy_signal())
+
+        assert result.executed is True
+        assert read_bot_snapshot(db_settings, "BTC/USD") == Decimal("200")  # 2 * 100
+
+    async def test_full_sell_zeroes_the_position_value_immediately(
+        self, db_settings: Settings
+    ) -> None:
+        async with UnitOfWork() as uow:
+            await uow.positions.create_or_update(
+                symbol="BTC/USD", side="long", amount=Decimal("1"), entry_price=Decimal("90")
+            )
+            await uow.commit()
+        client = make_client(last_price=Decimal("100"))
+        executor = make_executor()
+        executor.execute_market_order.return_value = make_order(
+            side=OrderSide.SELL, filled_amount=Decimal("1"), average_fill_price=Decimal("100")
+        )
+        engine = make_engine(client, executor, db_settings)
+
+        result = await engine.process_signal(sell_signal())
+
+        assert result.executed is True
+        assert read_bot_snapshot(db_settings, "BTC/USD") == Decimal("0")
+
+    async def test_partial_sell_writes_the_remaining_value_immediately(
+        self, db_settings: Settings
+    ) -> None:
+        async with UnitOfWork() as uow:
+            await uow.positions.create_or_update(
+                symbol="BTC/USD", side="long", amount=Decimal("1"), entry_price=Decimal("90")
+            )
+            await uow.commit()
+        client = make_client(last_price=Decimal("100"))
+        executor = make_executor()
+        executor.execute_market_order.return_value = make_order(
+            side=OrderSide.SELL, filled_amount=Decimal("0.7"), average_fill_price=Decimal("100")
+        )
+        engine = make_engine(client, executor, db_settings)
+
+        signal = Signal(
+            symbol="BTC/USD", side=OrderSide.SELL, strategy="test", reason="test",
+            exit_fraction=0.7,
+        )
+        result = await engine.process_signal(signal)
+
+        assert result.executed is True
+        # 0.3 BTC remaining * 100 fill price
+        assert read_bot_snapshot(db_settings, "BTC/USD") == Decimal("30")
+
+
 class TestRunStrategyOnce:
     async def test_no_signal_produced(self, db_settings: Settings) -> None:
         client = make_client()
@@ -516,6 +598,62 @@ class TestRunStrategyOnce:
         assert "no signal" in result.reason.lower()
         client.fetch_ohlcv.assert_awaited_once()
         executor.execute_market_order.assert_not_called()
+
+    async def test_no_signal_still_refreshes_equity_pool_while_flat(
+        self, db_settings: Settings
+    ) -> None:
+        """A long bullish stretch means many consecutive no-signal cycles for
+        RSIConfirmationExitStrategy - this bot's shared-pool entry must not go
+        stale for that whole time, even with nothing to actually trade."""
+        client = make_client()
+        client.fetch_ohlcv.return_value = [[1, 100, 100, 100, 100, 1]]
+        executor = make_executor(balance=Decimal("5000"))
+        engine = make_engine(client, executor, db_settings)
+        strategy = ScriptedStrategy(None)
+
+        await engine.run_strategy_once(strategy, "BTC/USD", timeframe="1w")
+
+        assert read_bot_snapshot(db_settings, "BTC/USD") == Decimal("0")
+        # Flat, so there's nothing to price - a ticker fetch would be a
+        # wasted API call (and extra nonce-contention risk) for no reason.
+        client.fetch_ticker.assert_not_called()
+        executor.get_balance.assert_awaited_once()
+
+    async def test_no_signal_still_refreshes_equity_pool_while_holding(
+        self, db_settings: Settings
+    ) -> None:
+        async with UnitOfWork() as uow:
+            await uow.positions.create_or_update(
+                symbol="BTC/USD", side="long", amount=Decimal("2"), entry_price=Decimal("90")
+            )
+            await uow.commit()
+        client = make_client(last_price=Decimal("150"))
+        client.fetch_ohlcv.return_value = [[1, 100, 100, 100, 100, 1]]
+        executor = make_executor(balance=Decimal("5000"))
+        engine = make_engine(client, executor, db_settings)
+        strategy = ScriptedStrategy(None)
+
+        await engine.run_strategy_once(strategy, "BTC/USD", timeframe="1w")
+
+        # 2 BTC priced at the live ticker (150), not a stale earlier read.
+        assert read_bot_snapshot(db_settings, "BTC/USD") == Decimal("300")
+
+    async def test_no_signal_refresh_failure_is_swallowed(self, db_settings: Settings) -> None:
+        """An uneventful cycle must stay uneventful - a network hiccup fetching
+        balance for the equity-pool refresh must never turn "nothing to do"
+        into a crashed cycle (cron would just retry the whole thing next tick
+        for no reason)."""
+        client = make_client()
+        client.fetch_ohlcv.return_value = [[1, 100, 100, 100, 100, 1]]
+        executor = make_executor()
+        executor.get_balance.side_effect = RuntimeError("exchange unreachable")
+        engine = make_engine(client, executor, db_settings)
+        strategy = ScriptedStrategy(None)
+
+        result = await engine.run_strategy_once(strategy, "BTC/USD", timeframe="1w")
+
+        assert result.executed is False
+        assert "no signal" in (result.reason or "").lower()
 
     async def test_signal_is_routed_through_process_signal(self, db_settings: Settings) -> None:
         client = make_client()

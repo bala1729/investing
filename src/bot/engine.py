@@ -64,6 +64,61 @@ class TradingEngine:
         self._settings = settings or get_settings()
         self._notifier = notifier or SmsNotifier(self._settings)
 
+    async def _sync_portfolio_equity(
+        self, symbol: str, position_value: Decimal, balance: Decimal
+    ) -> tuple[Decimal, Decimal]:
+        """Write this bot's latest position value to the shared equity tracker
+        and return (current_equity, peak_equity) computed across every bot's
+        latest known snapshot.
+
+        Called from three places - deliberately, not just the one path that
+        used to carry this: on every cycle regardless of whether a signal
+        fires (`run_strategy_once`'s no-signal branch), before gating a
+        signal (`process_signal`, so the drawdown check below it is current),
+        and immediately after a trade settles (`process_signal` again, post-
+        commit). A bot can go many cycles with no signal at all (daily
+        confirmation bullish but entry conditions not met) - the old call
+        site, only reached once a signal fired, let this bot's contribution
+        to the shared total go stale for that whole stretch. Worse, a bot's
+        OWN trade updates the real shared USD balance on the exchange
+        instantly, but used to only correct this bot's *position_value* row
+        on its *next* cycle, up to a full cron interval later - any other
+        bot reading the shared pool in that window double-counted the same
+        money (the new cash plus this bot's stale, not-yet-zeroed holding).
+        Calling this right after a trade settles, not just next cycle, closes
+        that window. Both were real, observed false drawdown-breaches (see
+        kraken-bot-state/RESTART.md, 2026-10-05 and 2026-10-07).
+
+        Persisted rather than in-memory: a restart must not reset the
+        high-water mark to whatever equity happens to be at that moment,
+        disarming the drawdown limit exactly when it matters. Shared across
+        every bot rather than kept per-symbol: this bot's own balance+position
+        is only a sliver of the real account (one Kraken account, five bots),
+        so a peak recorded from that sliver alone goes stale the instant any
+        *other* bot draws down the same shared USD balance into a new
+        position - see src/portfolio_equity.py for the earlier false
+        drawdown-breaches that caused.
+        """
+        try:
+            return await asyncio.to_thread(
+                record_and_get_portfolio_equity,
+                self._settings.portfolio_equity_db_path,
+                symbol,
+                position_value,
+                balance,
+            )
+        except Exception:
+            # This bot's own balance+position is a strict subset of the true
+            # total, so falling back to it can only make the drawdown check
+            # MORE cautious this cycle, never mask a real drawdown by
+            # undercounting - safe to fail open rather than block trading on
+            # a local sqlite hiccup.
+            logger.exception(
+                f"Portfolio equity tracking failed for {symbol} - falling back to "
+                "this bot's own balance+position for this cycle"
+            )
+            return balance + position_value, balance + position_value
+
     async def process_signal(
         self,
         signal: Signal,
@@ -104,41 +159,9 @@ class TradingEngine:
             if has_open_position and position is not None
             else Decimal("0")
         )
-        # Refreshed every cycle, unconditionally - deliberately ahead of the
-        # early-return gates below, not just on a cycle that reaches a real
-        # entry/exit decision. A bot sitting holding for hours (the common
-        # case: "already holding" short-circuits every cycle in between)
-        # would otherwise never update its contribution to the shared total,
-        # silently going stale exactly the way the old per-symbol table did -
-        # just slower. Persisted rather than in-memory for the same reason as
-        # before: a restart must not reset the high-water mark to whatever
-        # equity happens to be at that moment, disarming the drawdown limit
-        # exactly when it matters. Shared across every bot rather than kept
-        # per-symbol: this bot's own balance+position is only a sliver of the
-        # real account (one Kraken account, four bots), so a peak recorded
-        # from that sliver alone goes stale the instant any *other* bot draws
-        # down the same shared USD balance into a new position - see
-        # src/portfolio_equity.py for the two real false drawdown-breaches
-        # this caused before the fix.
-        try:
-            current_equity, peak_equity = await asyncio.to_thread(
-                record_and_get_portfolio_equity,
-                self._settings.portfolio_equity_db_path,
-                signal.symbol,
-                position_value,
-                balance,
-            )
-        except Exception:
-            # This bot's own balance+position is a strict subset of the true
-            # total, so falling back to it can only make the drawdown check
-            # MORE cautious this cycle, never mask a real drawdown by
-            # undercounting - safe to fail open rather than block trading on
-            # a local sqlite hiccup.
-            logger.exception(
-                f"Portfolio equity tracking failed for {signal.symbol} - falling back to "
-                "this bot's own balance+position for this cycle"
-            )
-            current_equity = peak_equity = balance + position_value
+        current_equity, peak_equity = await self._sync_portfolio_equity(
+            signal.symbol, position_value, balance
+        )
 
         # Kill switch gates entries only. Blocking an exit would trap capital in
         # exactly the situation someone reaches for a kill switch.
@@ -209,6 +232,7 @@ class TradingEngine:
         closed_pnl: Decimal | None = None
         hold_seconds: float | None = None
         return_pct: float | None = None
+        new_position_value: Decimal | None = None
         async with UnitOfWork() as uow:
             await uow.orders.create(order, strategy=signal.strategy)
             if order.status == OrderStatus.FILLED:
@@ -229,6 +253,9 @@ class TradingEngine:
                         stop_loss=decision.stop_loss_price,
                         take_profit=decision.take_profit_price,
                     )
+                    new_position_value = order.filled_amount * (
+                        order.average_fill_price or reference_price
+                    )
                 else:
                     # Same guarantee as the sizing branch above: a SELL that
                     # reached this point always had a real position.
@@ -237,6 +264,7 @@ class TradingEngine:
                     remaining = position.amount - order.filled_amount
                     if remaining <= Decimal("0.00000001"):
                         closed = await uow.positions.close_position(signal.symbol, exit_price)
+                        new_position_value = Decimal("0")
                     else:
                         closed = await uow.positions.reduce_position(
                             signal.symbol,
@@ -245,6 +273,7 @@ class TradingEngine:
                             clear_stop_loss=(signal.strategy == "stop_loss"),
                             clear_take_profit=(signal.strategy == "take_profit"),
                         )
+                        new_position_value = remaining * exit_price
                     if closed is not None:
                         closed_pnl = (exit_price - position.entry_price) * order.filled_amount
                         # Position.opened_at is NOT "when this open position started" - on
@@ -272,6 +301,17 @@ class TradingEngine:
                                 * 100
                             )
             await uow.commit()
+
+        if new_position_value is not None:
+            # Re-sync immediately rather than waiting for this bot's next
+            # cycle (up to a full cron interval away): the exchange's real
+            # USD balance already reflects this trade, so any other bot
+            # reading the shared pool before this bot's next cycle would
+            # otherwise double-count - the new cash plus this bot's stale,
+            # not-yet-updated position value. See _sync_portfolio_equity's
+            # docstring.
+            fresh_balance = await self._executor.get_balance(quote)
+            await self._sync_portfolio_equity(signal.symbol, new_position_value, fresh_balance)
 
         logger.info(
             f"Signal executed: {signal.side.value} {order.amount} {signal.symbol} "
@@ -608,8 +648,46 @@ class TradingEngine:
 
         signal = strategy.generate_signal(symbol, candles, higher_tf_candles)
         if signal is None:
+            await self._refresh_portfolio_equity_snapshot(symbol)
             return EngineResult(executed=False, reason="Strategy produced no signal")
         return await self.process_signal(signal)
+
+    async def _refresh_portfolio_equity_snapshot(self, symbol: str) -> None:
+        """Keep this bot's contribution to the shared equity pool fresh even on
+        a cycle with nothing to act on.
+
+        `process_signal` (and the equity sync inside it) is never reached on
+        a cycle where the strategy returns no signal at all - common for
+        `RSIConfirmationExitStrategy`, whose exit check only fires a signal
+        when the confirmation timeframe is bearish; a long bullish stretch
+        means many consecutive cycles with nothing to report, during which a
+        holding bot's contribution to the shared total would otherwise sit
+        frozen at whatever price was last captured. See
+        `_sync_portfolio_equity`'s docstring for the two false drawdown-
+        breaches this staleness already caused.
+
+        Swallows its own failures (logged, not raised): this is a best-effort
+        freshness update on what is usually an uneventful cycle, and must
+        never turn "nothing to do" into a crashed cycle - the exact same
+        fail-safe reasoning `_sync_portfolio_equity` already applies to its
+        own storage errors, extended here to the network calls this needs
+        that `_sync_portfolio_equity` itself doesn't make.
+        """
+        try:
+            _, quote = symbol.split("/")
+            async with UnitOfWork() as uow:
+                position = await uow.positions.get_by_symbol(symbol)
+            has_open_position = position is not None and position.amount > 0
+            if has_open_position:
+                assert position is not None
+                ticker = await self._client.fetch_ticker(symbol)
+                position_value = position.amount * Decimal(str(ticker["last"]))
+            else:
+                position_value = Decimal("0")
+            balance = await self._executor.get_balance(quote)
+            await self._sync_portfolio_equity(symbol, position_value, balance)
+        except Exception:
+            logger.exception(f"Portfolio equity refresh failed for {symbol} on a no-signal cycle")
 
     async def run_forever(
         self,
